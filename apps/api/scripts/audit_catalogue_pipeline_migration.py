@@ -81,7 +81,7 @@ def collect_catalogue_migration_audit(engine=database.engine) -> dict[str, Any]:
 
 
 def main() -> None:
-    database.run_migrations(database.engine)
+    database.seed_category_rules(database.engine)
     print(json.dumps(collect_catalogue_migration_audit(database.engine), indent=2, sort_keys=True))
 
 

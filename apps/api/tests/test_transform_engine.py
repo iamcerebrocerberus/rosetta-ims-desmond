@@ -23,7 +23,7 @@ from services import transform_engine as engine        # noqa: E402
 from services import pricing_service as P               # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 # ── Sandbox safety ──────────────────────────────────────────────────────────────────────

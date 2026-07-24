@@ -19,7 +19,7 @@ import models                                    # noqa: E402
 from services import transform_engine as engine  # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 _GP_4 = round((3 - 1) / 3, 4)   # 0.6667 — default gross_gp rounds to 4 dp
 _GP_2 = round((3 - 1) / 3, 2)   # 0.67  — an edited variant rounding to 2 dp

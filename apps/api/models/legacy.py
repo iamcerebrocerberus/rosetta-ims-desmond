@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -150,6 +150,11 @@ class SupplierBrand(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        Index("ix_products_status", "status"),
+        Index("ix_products_category", "category"),
+        Index("ix_products_updated_at", "updated_at"),
+    )
 
     id           = Column(Integer, primary_key=True, autoincrement=True)
     sku_code     = Column(String, unique=True, nullable=False, index=True)
@@ -197,7 +202,12 @@ class Product(Base):
 
 class ProductSupplier(Base):
     __tablename__ = "product_suppliers"
-    __table_args__ = (UniqueConstraint('product_id', 'supplier_id'),)
+    __table_args__ = (
+        UniqueConstraint('product_id', 'supplier_id'),
+        Index("ix_product_suppliers_product_id", "product_id"),
+        Index("ix_product_suppliers_barcode", "barcode"),
+        Index("ix_product_suppliers_sup_sku", "supplier_id", "supplier_sku"),
+    )
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
     product_id      = Column(Integer, ForeignKey("products.id"), nullable=False)
@@ -295,7 +305,10 @@ class MbbTerm(Base):
 
 class ProductChannel(Base):
     __tablename__ = "product_channels"
-    __table_args__ = (UniqueConstraint('product_id', 'channel'),)
+    __table_args__ = (
+        UniqueConstraint('product_id', 'channel'),
+        Index("ix_product_channels_product_id", "product_id"),
+    )
 
     id                  = Column(Integer, primary_key=True, autoincrement=True)
     product_id          = Column(Integer, ForeignKey("products.id"), nullable=False)
@@ -312,7 +325,10 @@ class ProductChannel(Base):
 
 class StockLevel(Base):
     __tablename__ = "stock_levels"
-    __table_args__ = (UniqueConstraint('product_id', 'location'),)
+    __table_args__ = (
+        UniqueConstraint('product_id', 'location'),
+        Index("ix_stock_levels_product_id", "product_id"),
+    )
 
     id          = Column(Integer, primary_key=True, autoincrement=True)
     product_id  = Column(Integer, ForeignKey("products.id"), nullable=False)
@@ -327,6 +343,9 @@ class StockLevel(Base):
 
 class SalesVelocity(Base):
     __tablename__ = "sales_velocity"
+    __table_args__ = (
+        Index("ix_sales_velocity_product_id", "product_id"),
+    )
 
     id            = Column(Integer, primary_key=True, autoincrement=True)
     product_id    = Column(Integer, ForeignKey("products.id"), nullable=False)
@@ -359,6 +378,9 @@ class ExpiryTracking(Base):
 
 class CompetitorPrice(Base):
     __tablename__ = "competitor_prices"
+    __table_args__ = (
+        Index("ix_competitor_prices_product", "product_id"),
+    )
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
     product_id      = Column(Integer, ForeignKey("products.id"), nullable=False)
@@ -434,6 +456,11 @@ class CatalogueCostStaging(Base):
 
 class CatalogueItem(Base):
     __tablename__ = "catalogue_items"
+    __table_args__ = (
+        Index("ix_catalogue_items_review_status", "review_status"),
+        Index("ix_catalogue_items_status_import", "review_status", "import_id", "confidence_score"),
+        Index("ix_catalogue_items_import_id", "import_id"),
+    )
 
     id                 = Column(Integer, primary_key=True, autoincrement=True)
     import_id          = Column(Integer, ForeignKey("catalogue_imports.id"), nullable=False)
@@ -570,7 +597,9 @@ class ProductTag(Base):
     confidence = Column(Float, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(String, nullable=False)
-    __table_args__ = (UniqueConstraint('product_id', 'tag_id', name='uq_product_tag'),)
+    __table_args__ = (
+        UniqueConstraint('product_id', 'tag_id', name='uq_product_tag'),
+    )
 
     tag     = relationship("Tag", back_populates="product_links")
     product = relationship("Product", back_populates="tag_links")

@@ -38,7 +38,7 @@ from services import extraction_service, tagging_service  # noqa: E402
 
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 FIXTURE_TEXT_PATH = (

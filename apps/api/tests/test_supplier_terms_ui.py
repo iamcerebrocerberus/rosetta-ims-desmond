@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from dependencies import require_user       # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 class _FakeAdmin:

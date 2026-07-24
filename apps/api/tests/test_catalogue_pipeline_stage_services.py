@@ -18,7 +18,7 @@ from services import catalogue_pipeline_stages as stages  # noqa: E402
 
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 RUN_ID = UUID("11111111-1111-4111-8111-111111111111")

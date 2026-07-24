@@ -32,7 +32,7 @@ from audit_catalogue_pipeline_migration import collect_catalogue_migration_audit
 
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "catalogue_pipeline" / "v1" / "valid"
 
@@ -211,7 +211,7 @@ def test_sqlite_foreign_key_enforcement_for_pipeline_models(tmp_path):
         cursor.close()
 
     models.Base.metadata.create_all(bind=engine)
-    database.run_migrations(engine)
+    database.seed_category_rules(engine)
 
     with engine.begin() as conn:
         assert conn.exec_driver_sql("PRAGMA foreign_keys").scalar() == 1
@@ -252,49 +252,6 @@ def test_sqlite_foreign_key_enforcement_for_pipeline_models(tmp_path):
                     """
                 )
             )
-
-
-def test_migration_backfills_existing_ingestion_run_uuid_and_is_idempotent(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'pre_task.db'}")
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE suppliers (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL)"))
-        conn.execute(text("CREATE TABLE catalogue_imports (id INTEGER PRIMARY KEY, supplier_id INTEGER, filename TEXT NOT NULL, format TEXT, imported_at TEXT NOT NULL, status TEXT NOT NULL, item_count INTEGER)"))
-        conn.execute(text("""
-            CREATE TABLE catalogue_ingestion_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_document_id INTEGER NOT NULL,
-                supplier_id INTEGER,
-                contract_version TEXT,
-                extractor_name TEXT NOT NULL,
-                extractor_version TEXT NOT NULL,
-                parent_run_id INTEGER,
-                status TEXT NOT NULL DEFAULT 'queued',
-                started_at TEXT NOT NULL,
-                completed_at TEXT,
-                items_extracted INTEGER,
-                metrics TEXT,
-                error_summary TEXT,
-                created_at TEXT NOT NULL
-            )
-        """))
-        conn.execute(text("INSERT INTO suppliers VALUES (14, 'HILLS', 'Hill''s', '2026-01-01')"))
-        conn.execute(text("INSERT INTO catalogue_imports VALUES (1, 14, 'hills.pdf', 'pdf', '2026-01-01', 'review', 1)"))
-        conn.execute(text("""
-            INSERT INTO catalogue_ingestion_runs
-            (source_document_id, supplier_id, contract_version, extractor_name, extractor_version, started_at, created_at)
-            VALUES (1, 14, 'catalogue.extraction_profile.v1', 'fixture', 'v1', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
-        """))
-
-    database.run_migrations(engine)
-    database.run_migrations(engine)
-
-    inspector = sa.inspect(engine)
-    assert "catalogue_extracted_evidence" in inspector.get_table_names()
-    columns = {column["name"] for column in inspector.get_columns("catalogue_ingestion_runs")}
-    assert {"run_uuid", "supplier_source_contract_id", "supplier_source_contract_version", "document_type"} <= columns
-    with engine.connect() as conn:
-        run_uuid = conn.execute(text("SELECT run_uuid FROM catalogue_ingestion_runs WHERE id = 1")).scalar()
-    assert run_uuid and len(run_uuid) == 36
 
 
 def test_migration_audit_reports_legacy_rows_without_mutating(db):

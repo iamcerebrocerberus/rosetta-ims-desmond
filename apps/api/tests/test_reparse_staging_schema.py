@@ -14,7 +14,7 @@ import database               # noqa: E402
 import models                 # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 BATCH_COLS = {"id", "scope_type", "scope_ref", "parser_version", "mode", "status",
               "item_count", "changed_count", "created_at", "created_by"}
@@ -78,7 +78,7 @@ def test_defaults_applied():
 
 
 def test_rerun_migration_idempotent():
-    database.run_migrations(database.engine)   # must not raise (tables already exist)
+    database.seed_category_rules(database.engine)   # must not raise (tables already exist)
     insp = sa.inspect(database.engine)
     assert "reparse_batch" in insp.get_table_names() and "reparse_change" in insp.get_table_names()
 

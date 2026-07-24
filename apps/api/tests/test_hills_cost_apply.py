@@ -23,7 +23,7 @@ import models     # noqa: E402
 import hills_cost_basis_fix as fix   # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 _TMP_CSV = os.path.join(tempfile.mkdtemp(), "applied.csv")
 

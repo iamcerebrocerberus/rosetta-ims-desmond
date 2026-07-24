@@ -22,7 +22,7 @@ import models     # noqa: E402
 import upp_weight_misread_cleanup as wm   # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 _TMP_CSV = os.path.join(tempfile.mkdtemp(), "wm_applied.csv")
 

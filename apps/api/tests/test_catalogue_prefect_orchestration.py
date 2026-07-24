@@ -49,7 +49,7 @@ from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueS
 
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 HILLS_ROW_TEXT = "10447 Hill's Healthy Cuisine Chicken 82g HK$13.10 ambiguous offer text"

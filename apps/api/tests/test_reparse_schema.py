@@ -5,7 +5,7 @@ Proves the schema change is purely additive and inert:
     source_ref — all NULLABLE with no default
   * an existing-style CatalogueImport + CatalogueItem load with them all NULL
   * get_unit_cost() behaviour is unchanged (no cost/pricing surface touched)
-  * re-running run_migrations() neither errors nor rewrites existing rows
+  * re-running seed_category_rules() neither errors nor rewrites existing rows
 
 Runnable under pytest (or `python -m tests.test_reparse_schema` from backend/).
 """
@@ -20,7 +20,7 @@ import models                 # noqa: E402
 from services.pricing_service import get_unit_cost  # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 ITEM_FIELDS = ["parser_version", "reparsed_at", "reparse_source"]
 IMPORT_FIELDS = ["source_ref"]
@@ -83,7 +83,7 @@ def test_rerun_migration_idempotent_and_no_rewrite():
         iid = item.id
     finally:
         d.close()
-    database.run_migrations(database.engine)   # must not raise, must not touch existing rows
+    database.seed_category_rules(database.engine)   # must not raise, must not touch existing rows
     d = database.SessionLocal()
     try:
         got = d.get(models.CatalogueItem, iid)

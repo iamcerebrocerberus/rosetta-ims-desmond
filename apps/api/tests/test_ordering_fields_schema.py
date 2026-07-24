@@ -4,7 +4,7 @@ Proves the schema change is purely additive and inert:
   * the six new fields exist and are NULLABLE with no default
   * an existing-style ProductSupplier row loads with them all NULL
   * get_unit_cost() behaviour is unchanged (still basic_cost / units_per_pack)
-  * re-running run_migrations() neither errors nor rewrites existing rows
+  * re-running seed_category_rules() neither errors nor rewrites existing rows
 
 Runnable directly (`python tests/test_ordering_fields_schema.py`) or under pytest.
 """
@@ -19,7 +19,7 @@ import models                 # noqa: E402
 from services.pricing_service import get_unit_cost  # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 NEW_FIELDS = [
     "order_increment_qty", "order_increment_uom", "minimum_order_qty",
@@ -79,7 +79,7 @@ def test_rerun_migration_is_idempotent_and_no_rewrite():
         pid = _mk_link(d, "PRA2", "PRA-2", basic_cost=42.0, units_per_pack=12)
     finally:
         d.close()
-    database.run_migrations(database.engine)   # must not raise, must not touch existing rows
+    database.seed_category_rules(database.engine)   # must not raise, must not touch existing rows
     d = database.SessionLocal()
     try:
         got = d.get(models.ProductSupplier, pid)

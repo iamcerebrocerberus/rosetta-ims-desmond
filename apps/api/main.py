@@ -17,12 +17,10 @@ import models
 import database
 from routers import include_routers
 
-# Build the catalogue pipeline fresh: drop superseded tables, then create_all
-# rebuilds the current schema. No rename / data migration for these tables.
-database.drop_superseded_catalogue_tables(database.engine)
+# Schema comes entirely from the models — build fresh, no migrations.
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
 database.seed_default_users(database.engine)
+database.seed_category_rules(database.engine)
 
 # Config-driven transformation engine (Phase A): seed the registry + default config version so
 # the engine reproduces the previously hard-coded formulas. Idempotent; behaviour-neutral.

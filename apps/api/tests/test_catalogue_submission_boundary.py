@@ -32,7 +32,7 @@ from services.catalogue_submission import (  # noqa: E402
 
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 class _Admin:
@@ -371,55 +371,6 @@ def test_submission_auth_and_openapi_contract(db, tmp_path, monkeypatch):
     assert "/catalogues/ingestions" in schema["paths"]
     assert "/catalogues/ingestions/{run_uuid}" in schema["paths"]
     assert client.get("/v2/openapi.json").status_code == 404
-
-
-def test_submission_migration_relaxes_existing_started_at_not_null(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'old_run.db'}")
-    with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE suppliers (id INTEGER PRIMARY KEY, code TEXT UNIQUE NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL)"))
-        conn.execute(text("CREATE TABLE catalogue_imports (id INTEGER PRIMARY KEY, supplier_id INTEGER, filename TEXT NOT NULL, format TEXT, imported_at TEXT NOT NULL, status TEXT NOT NULL, item_count INTEGER)"))
-        conn.execute(text("""
-            CREATE TABLE catalogue_ingestion_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_document_id INTEGER NOT NULL,
-                supplier_id INTEGER,
-                contract_version TEXT,
-                extractor_name TEXT NOT NULL,
-                extractor_version TEXT NOT NULL,
-                parent_run_id INTEGER,
-                status TEXT NOT NULL DEFAULT 'queued',
-                started_at TEXT NOT NULL,
-                completed_at TEXT,
-                items_extracted INTEGER,
-                metrics TEXT,
-                error_summary TEXT,
-                created_at TEXT NOT NULL
-            )
-        """))
-        conn.execute(text("INSERT INTO suppliers VALUES (14, 'HILLS', 'Hill''s', '2026-07-23T00:00:00+00:00')"))
-        conn.execute(text("INSERT INTO catalogue_imports VALUES (1, 14, 'hills.pdf', 'pdf', '2026-07-23T00:00:00+00:00', 'queued', 0)"))
-        conn.execute(text("""
-            INSERT INTO catalogue_ingestion_runs (
-                source_document_id, supplier_id, contract_version, extractor_name, extractor_version,
-                status, started_at, created_at
-            )
-            VALUES (1, 14, 'catalogue.extraction_profile.v1', 'old', 'v1', 'queued',
-                    '2026-07-23T00:00:00+00:00', '2026-07-23T00:00:00+00:00')
-        """))
-
-    database.run_migrations(engine)
-
-    inspector = sa.inspect(engine)
-    started_at = next(column for column in inspector.get_columns("catalogue_ingestion_runs") if column["name"] == "started_at")
-    assert started_at["nullable"] is True
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO catalogue_ingestion_runs (
-                run_uuid, source_document_id, supplier_id, extractor_name, extractor_version, status, started_at, created_at
-            )
-            VALUES ('99999999-9999-4999-8999-999999999999', 1, 14, 'queued', 'v1', 'queued', NULL,
-                    '2026-07-23T00:00:00+00:00')
-        """))
 
 
 def test_post_commit_audit_failure_does_not_fail_the_durable_submission(client, db, monkeypatch, caplog):

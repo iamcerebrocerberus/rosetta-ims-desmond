@@ -91,6 +91,8 @@ class IngestionRun(Base):
         Index("ix_ingestion_runs_run_uuid", "run_uuid"),
         Index("ix_ingestion_runs_supplier_contract", "supplier_id", "supplier_source_contract_id", "supplier_source_contract_version"),
         Index("ix_ingestion_runs_pipeline_source_document", "catalogue_source_document_id"),
+        Index("ix_ingestion_runs_source_document", "source_document_id"),
+        Index("ix_ingestion_runs_parent", "parent_run_id"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

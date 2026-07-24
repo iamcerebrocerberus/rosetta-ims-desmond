@@ -19,7 +19,7 @@ import models     # noqa: E402
 import upp_size_misread_cleanup as sz   # noqa: E402
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 _DIR = tempfile.mkdtemp()
 _MANIFEST = os.path.join(_DIR, "preview.csv")

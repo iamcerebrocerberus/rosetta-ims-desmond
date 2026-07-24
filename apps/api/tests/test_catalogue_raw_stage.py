@@ -43,7 +43,7 @@ from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueS
 
 
 models.Base.metadata.create_all(bind=database.engine)
-database.run_migrations(database.engine)
+database.seed_category_rules(database.engine)
 
 
 @pytest.fixture()
