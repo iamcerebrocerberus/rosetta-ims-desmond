@@ -14,6 +14,7 @@ import database
 import models
 from permissions import require_capability
 from services import audit_log
+from services import catalogue_pipeline_persistence as persistence
 from services.catalogue_submission import (
     CatalogueIngestionStatus,
     CatalogueSubmissionCommand,
@@ -148,6 +149,135 @@ def get_catalogue_ingestion_status(
     except Exception as exc:
         raise _http_error(exc) from exc
     return _status_response(result)
+
+
+# ── Per-layer read API ───────────────────────────────────────────────────────
+# Read-only views over the durable records each pipeline layer produced for one
+# run, named by the RAW -> STAGING -> INTERMEDIATE -> SERVING timeline. Records
+# are reconstructed from the persistence contracts. (Serving is deferred until
+# the review/approve/publish flow exists; its rows link via lineage, not run.)
+
+
+@router.get("/ingestions/{run_uuid}/raw")
+def get_raw_layer(
+    run_uuid: UUID,
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_capability("catalogue_onboard")),
+) -> dict[str, Any]:
+    """RAW layer (steps 1-2): the preserved original's file facts and the
+    append-only raw-stage verification history. No file content, no meaning."""
+    run = _load_run_or_404(db, run_uuid)
+    source = run.pipeline_source_document
+    if source is None and run.catalogue_source_document_id:
+        source = db.get(models.CatalogueSourceDocument, run.catalogue_source_document_id)
+    attempts = (
+        db.query(models.CatalogueRawStageAttempt)
+        .filter_by(ingestion_run_uuid=str(run_uuid))
+        .order_by(models.CatalogueRawStageAttempt.id)
+        .all()
+    )
+    return {
+        "ingestion_run_id": str(run_uuid),
+        "layer": "raw",
+        "source": _source_summary(source) if source else None,
+        "attempts": [_attempt_summary(a) for a in attempts],
+    }
+
+
+@router.get("/ingestions/{run_uuid}/staging")
+def get_staging_layer(
+    run_uuid: UUID,
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_capability("catalogue_onboard")),
+) -> dict[str, Any]:
+    """STAGING layer (steps 3-4): verbatim, source-located extracted evidence."""
+    _load_run_or_404(db, run_uuid)
+    rows = (
+        db.query(models.CatalogueExtractedEvidence)
+        .filter_by(ingestion_run_uuid=str(run_uuid))
+        .order_by(models.CatalogueExtractedEvidence.id)
+        .all()
+    )
+    evidence = [persistence.extracted_evidence_to_contract(r).model_dump(mode="json") for r in rows]
+    return {"ingestion_run_id": str(run_uuid), "layer": "staging", "count": len(evidence), "evidence": evidence}
+
+
+@router.get("/ingestions/{run_uuid}/intermediate")
+def get_intermediate_layer(
+    run_uuid: UUID,
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_capability("catalogue_onboard")),
+) -> dict[str, Any]:
+    """INTERMEDIATE layer (steps 5-8): interpreted claims, their validation
+    issues, and prepared mastering candidates — proposals awaiting review."""
+    _load_run_or_404(db, run_uuid)
+    run_filter = {"ingestion_run_uuid": str(run_uuid)}
+    claims = [
+        persistence.interpreted_claim_to_contract(r).model_dump(mode="json")
+        for r in db.query(models.CatalogueInterpretedClaim).filter_by(**run_filter).order_by(models.CatalogueInterpretedClaim.id).all()
+    ]
+    issues = [
+        persistence.validation_issue_to_contract(r).model_dump(mode="json")
+        for r in db.query(models.CatalogueValidationIssue).filter_by(**run_filter).order_by(models.CatalogueValidationIssue.id).all()
+    ]
+    candidates = [
+        persistence.mastering_candidate_to_contract(r).model_dump(mode="json")
+        for r in db.query(models.CatalogueMasteringCandidate).filter_by(**run_filter).order_by(models.CatalogueMasteringCandidate.id).all()
+    ]
+    return {
+        "ingestion_run_id": str(run_uuid),
+        "layer": "intermediate",
+        "claims": claims,
+        "validation_issues": issues,
+        "mastering_candidates": candidates,
+    }
+
+
+def _load_run_or_404(db: Session, run_uuid: UUID) -> models.IngestionRun:
+    run = db.query(models.IngestionRun).filter_by(run_uuid=str(run_uuid)).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail=_detail("INGESTION_RUN_NOT_FOUND", f"Ingestion run {run_uuid} was not found"))
+    return run
+
+
+def _source_summary(source: models.CatalogueSourceDocument) -> dict[str, Any]:
+    import json as _json
+
+    try:
+        metadata = _json.loads(source.source_metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    return {
+        "supplier_catalogue_id": source.supplier_catalogue_uuid,
+        "source_file_id": source.source_file_uuid,
+        "original_filename": metadata.get("original_filename") or source.filename,
+        "content_type": metadata.get("content_type"),
+        "byte_size": source.byte_size,
+        "page_count": source.page_count,
+        "checksum_sha256": source.source_checksum,
+        "source_format": source.source_format,
+        "supplier_source_contract_id": source.supplier_source_contract_id,
+        "supplier_source_contract_version": source.supplier_source_contract_version,
+        "document_type": source.document_type,
+        "raw_stage_status": source.raw_stage_status,
+        "raw_stage_completed_at": source.raw_stage_completed_at,
+        "received_at": source.received_at,
+    }
+
+
+def _attempt_summary(attempt: models.CatalogueRawStageAttempt) -> dict[str, Any]:
+    return {
+        "attempt_id": attempt.attempt_uuid,
+        "status": attempt.status,
+        "attempted_at": attempt.attempted_at,
+        "completed_at": attempt.completed_at,
+        "checksum_sha256": attempt.checksum_sha256,
+        "byte_size": attempt.byte_size,
+        "source_format": attempt.source_format,
+        "page_count": attempt.page_count,
+        "failure_code": attempt.failure_code,
+        "failure_message": attempt.failure_message,
+    }
 
 
 def _submission_response(result: CatalogueSubmissionResult) -> CatalogueSubmissionResponse:
