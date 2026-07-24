@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from schemas.catalogue_pipeline.enums import ReviewRequirement
-from schemas.catalogue_pipeline.raw_observation_v1 import RawObservationV1
+from schemas.catalogue_pipeline.extracted_evidence_v1 import ExtractedEvidenceV1
 from services import catalogue_pipeline_stages as stages
 from services.catalogue_evidence_extraction import ExtractedEvidence
 from services.catalogue_interpretation import InterpretedItem
@@ -13,7 +13,7 @@ from services.catalogue_interpretation import InterpretedItem
 from .catalogue_types import RunIdentity
 
 
-def raw_input_from_extracted_evidence(evidence: ExtractedEvidence) -> stages.RawObservationInput:
+def raw_input_from_extracted_evidence(evidence: ExtractedEvidence) -> stages.ExtractedEvidenceInput:
     """Map one evidence observation to one Raw input without semantic mutation."""
 
     source_metadata = {
@@ -24,7 +24,7 @@ def raw_input_from_extracted_evidence(evidence: ExtractedEvidence) -> stages.Raw
         "provider_request_id": evidence.provider_request_id,
         "extraction_warnings": list(evidence.warnings),
     }
-    return stages.RawObservationInput(
+    return stages.ExtractedEvidenceInput(
         idempotency_key=evidence.observation_key,
         source_location=evidence.source_location,
         raw_text=evidence.raw_text,
@@ -37,7 +37,7 @@ def raw_input_from_extracted_evidence(evidence: ExtractedEvidence) -> stages.Raw
     )
 
 
-def evidence_from_persisted_observation(contract: RawObservationV1) -> ExtractedEvidence:
+def evidence_from_persisted_observation(contract: ExtractedEvidenceV1) -> ExtractedEvidence:
     """Reconstruct interpretation input from a PERSISTED step-4 observation.
 
     The Intermediate layer consumes durable evidence, never the extraction
@@ -65,7 +65,7 @@ def evidence_from_persisted_observation(contract: RawObservationV1) -> Extracted
     )
 
 
-def staging_command_from_interpretation(item: InterpretedItem) -> stages.BuildStagingItemCommand:
+def claim_command_from_interpretation(item: InterpretedItem) -> stages.BuildInterpretedClaimCommand:
     """Create an interpreted-claim (step 6) command from one interpretation.
 
     Claims whose interpretation was degraded, returned no verdict, or had
@@ -79,7 +79,7 @@ def staging_command_from_interpretation(item: InterpretedItem) -> stages.BuildSt
         or provenance.get("no_verdict")
         or provenance.get("grounding_dropped")
     )
-    return stages.BuildStagingItemCommand(
+    return stages.BuildInterpretedClaimCommand(
         raw_observation_ids=(item.raw_observation_id,),
         raw_fields=item.raw_fields,
         proposed_fields=item.proposed_fields,
@@ -92,7 +92,7 @@ def staging_command_from_interpretation(item: InterpretedItem) -> stages.BuildSt
     )
 
 
-def mastering_command_for_staging(
+def mastering_command_for_claim(
     *,
     run_identity: RunIdentity,
     catalogue_item_id: UUID,
@@ -101,7 +101,7 @@ def mastering_command_for_staging(
     """Create a pending-review mastering command from post-Raw interpretation.
 
     Supplier identity comes from the persisted run; sku/name/barcode come from
-    the same interpreted fields that produced the staging item. No approval or
+    the same interpreted fields that produced the interpreted claim. No approval or
     application semantics are implied here.
     """
 

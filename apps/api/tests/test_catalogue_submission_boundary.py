@@ -95,9 +95,9 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueStagingRawObservation,
-        models.CatalogueStagingItem,
-        models.CatalogueRawObservation,
+        models.CatalogueInterpretedClaimEvidence,
+        models.CatalogueInterpretedClaim,
+        models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
     ):
@@ -149,8 +149,8 @@ def test_submission_service_registers_source_import_and_queued_run(db, tmp_path)
     assert db.query(models.CatalogueItem).count() == 0
     assert db.query(models.CatalogueSourceDocument).count() == 1
     assert db.query(models.IngestionRun).count() == 1
-    assert db.query(models.CatalogueRawObservation).count() == 0
-    assert db.query(models.CatalogueStagingItem).count() == 0
+    assert db.query(models.CatalogueExtractedEvidence).count() == 0
+    assert db.query(models.CatalogueInterpretedClaim).count() == 0
     assert db.query(models.CatalogueMasteringCandidate).count() == 0
     assert db.query(models.CatalogueServingPublication).count() == 0
 

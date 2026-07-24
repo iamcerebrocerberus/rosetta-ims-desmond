@@ -26,7 +26,7 @@ from openpyxl.utils import get_column_letter
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from schemas.catalogue_pipeline.enums import ExtractionMethod, SourceFormat
-from schemas.catalogue_pipeline.raw_observation_v1 import BoundingBox, RawCell, SourceLocation
+from schemas.catalogue_pipeline.extracted_evidence_v1 import BoundingBox, RawCell, SourceLocation
 
 
 ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"

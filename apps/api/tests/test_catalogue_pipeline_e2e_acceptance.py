@@ -127,8 +127,8 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert run.started_at is None
     assert db.query(models.CatalogueImport).count() == 1
     assert db.query(models.CatalogueSourceDocument).count() == 1
-    assert db.query(models.CatalogueRawObservation).count() == 0
-    assert db.query(models.CatalogueStagingItem).count() == 0
+    assert db.query(models.CatalogueExtractedEvidence).count() == 0
+    assert db.query(models.CatalogueInterpretedClaim).count() == 0
     assert db.query(models.CatalogueMasteringCandidate).count() == 0
 
     source = db.query(models.CatalogueSourceDocument).one()
@@ -161,12 +161,12 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert status_payload["completed_at"] is not None
     assert status_payload["items_extracted"] == 4
 
-    raw_rows = db.query(models.CatalogueRawObservation).order_by(models.CatalogueRawObservation.id).all()
-    staging_rows = db.query(models.CatalogueStagingItem).order_by(models.CatalogueStagingItem.id).all()
+    raw_rows = db.query(models.CatalogueExtractedEvidence).order_by(models.CatalogueExtractedEvidence.id).all()
+    staging_rows = db.query(models.CatalogueInterpretedClaim).order_by(models.CatalogueInterpretedClaim.id).all()
     assert len(raw_rows) == 4
     assert len(staging_rows) == 2
     for raw_row in raw_rows:
-        raw_contract = persistence.raw_observation_to_contract(raw_row)
+        raw_contract = persistence.extracted_evidence_to_contract(raw_row)
         assert raw_contract.raw_text
         assert raw_contract.source_location.page_number == 1
         assert raw_contract.source_location.source_object_key.startswith("page:1:line:")
@@ -181,11 +181,11 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert candidate_contract.supplier_product_resolution.supplier_id == 14
     assert candidate_contract.supplier_product_resolution.supplier_sku == "10447"
 
-    valid_staging = db.query(models.CatalogueStagingItem).filter_by(
+    valid_staging = db.query(models.CatalogueInterpretedClaim).filter_by(
         catalogue_item_uuid=candidate.catalogue_item_uuid
     ).one()
     invalid_staging = [row for row in staging_rows if row.catalogue_item_uuid != valid_staging.catalogue_item_uuid][0]
-    invalid_staging_contract = persistence.staging_item_to_contract(invalid_staging)
+    invalid_staging_contract = persistence.interpreted_claim_to_contract(invalid_staging)
     assert invalid_staging_contract.raw_fields.supplier_sku == "Q-1"
 
     issue = db.query(models.CatalogueValidationIssue).one()
@@ -196,7 +196,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert issue.raw_observation_uuid in {row.raw_observation_uuid for row in raw_rows}
     assert issue_contract.raw_value == "By Quote"
     assert issue_contract.review_guidance
-    invalid_raw = db.query(models.CatalogueRawObservation).filter_by(
+    invalid_raw = db.query(models.CatalogueExtractedEvidence).filter_by(
         raw_observation_uuid=issue.raw_observation_uuid
     ).one()
     _assert_text_contains(_pdf_page_text(stored_path.read_bytes(), page_number=1), invalid_raw.raw_text)
@@ -331,8 +331,8 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
 
     replay_flow = catalogue_ingestion_flow(ingestion_run_id=run_id)
     assert replay_flow.terminal_status == "completed_with_warnings"
-    assert db.query(models.CatalogueRawObservation).count() == 4
-    assert db.query(models.CatalogueStagingItem).count() == 2
+    assert db.query(models.CatalogueExtractedEvidence).count() == 4
+    assert db.query(models.CatalogueInterpretedClaim).count() == 2
     assert db.query(models.CatalogueMasteringCandidate).count() == 1
     with pytest.raises(TerminalRunReplay):
         claim_queued_run(db, ingestion_run_id=run_id)
@@ -410,21 +410,21 @@ def _assert_served_field_lineage(
     source: models.CatalogueSourceDocument,
     serving,
     candidate: models.CatalogueMasteringCandidate,
-    staging: models.CatalogueStagingItem,
+    staging: models.CatalogueInterpretedClaim,
     raw_texts_before_review: dict[str, str | None],
     source_bytes: bytes,
 ) -> None:
     candidate_contract = persistence.mastering_candidate_to_contract(candidate)
-    staging_contract = persistence.staging_item_to_contract(staging)
+    staging_contract = persistence.interpreted_claim_to_contract(staging)
     raw_ids = [str(raw_id) for raw_id in serving.lineage.raw_observation_ids]
     raw_rows = (
-        db.query(models.CatalogueRawObservation)
-        .filter(models.CatalogueRawObservation.raw_observation_uuid.in_(raw_ids))
+        db.query(models.CatalogueExtractedEvidence)
+        .filter(models.CatalogueExtractedEvidence.raw_observation_uuid.in_(raw_ids))
         .all()
     )
     assert raw_rows
     raw_row = raw_rows[0]
-    raw_contract = persistence.raw_observation_to_contract(raw_row)
+    raw_contract = persistence.extracted_evidence_to_contract(raw_row)
 
     assert serving.canonical_sku == candidate_contract.product_variant_resolution.canonical_sku
     assert serving.supplier_offering.supplier_sku == candidate_contract.supplier_product_resolution.supplier_sku
@@ -477,9 +477,9 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueStagingRawObservation,
-        models.CatalogueStagingItem,
-        models.CatalogueRawObservation,
+        models.CatalogueInterpretedClaimEvidence,
+        models.CatalogueInterpretedClaim,
+        models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
     ):

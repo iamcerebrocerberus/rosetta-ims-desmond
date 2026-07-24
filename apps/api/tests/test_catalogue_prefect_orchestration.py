@@ -36,7 +36,7 @@ from orchestration.catalogue_types import (  # noqa: E402
     TransientProviderError,
 )
 from schemas.catalogue_pipeline.enums import ExtractionMethod, SourceFormat  # noqa: E402
-from schemas.catalogue_pipeline.raw_observation_v1 import SourceLocation  # noqa: E402
+from schemas.catalogue_pipeline.extracted_evidence_v1 import SourceLocation  # noqa: E402
 from services import catalogue_interpretation  # noqa: E402
 from services.catalogue_evidence_extraction import (  # noqa: E402
     ExtractedEvidence,
@@ -95,9 +95,9 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueStagingRawObservation,
-        models.CatalogueStagingItem,
-        models.CatalogueRawObservation,
+        models.CatalogueInterpretedClaimEvidence,
+        models.CatalogueInterpretedClaim,
+        models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
     ):
@@ -459,8 +459,8 @@ def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch)
     assert run.status == "completed"
     assert run.started_at is not None
     assert run.completed_at is not None
-    assert db.query(models.CatalogueRawObservation).count() == 1
-    assert db.query(models.CatalogueStagingItem).count() == 1
+    assert db.query(models.CatalogueExtractedEvidence).count() == 1
+    assert db.query(models.CatalogueInterpretedClaim).count() == 1
     candidate = db.query(models.CatalogueMasteringCandidate).one()
     assert candidate.review_status == "PENDING_REVIEW"
     assert db.query(models.CatalogueReviewDecision).count() == 0
@@ -469,7 +469,7 @@ def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch)
 
     replay = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
     assert replay.terminal_status == "completed"
-    assert db.query(models.CatalogueRawObservation).count() == 1
+    assert db.query(models.CatalogueExtractedEvidence).count() == 1
 
 
 def test_flow_records_blocking_validation_and_skips_candidate(db, monkeypatch):
@@ -516,7 +516,7 @@ def test_flow_without_interpretation_provider_stages_everything_for_review(db):
     assert flow_result.staging_items_created == 1
     assert flow_result.mastering_candidates_created == 1
     assert any("not configured" in warning for warning in flow_result.warnings)
-    staging = db.query(models.CatalogueStagingItem).one()
+    staging = db.query(models.CatalogueInterpretedClaim).one()
     assert staging.review_requirement in {"NOT_REQUIRED", "RECOMMENDED", "REQUIRED"}
 
 
@@ -568,7 +568,7 @@ def _run_status(db, run_id):
 
 
 def _no_downstream(db):
-    assert db.query(models.CatalogueStagingItem).count() == 0
+    assert db.query(models.CatalogueInterpretedClaim).count() == 0
     assert db.query(models.CatalogueMasteringCandidate).count() == 0
 
 
@@ -576,9 +576,9 @@ def test_stage_error_during_capture_fails_the_run_not_running(db, monkeypatch):
     result = _submit(db, content=_text_pdf_bytes([HILLS_ROW_TEXT]))
 
     def boom(_self, _command):
-        raise stages.IdempotencyConflict("Raw Observation already exists with different material input")
+        raise stages.IdempotencyConflict("extracted evidence observation already exists with different material input")
 
-    monkeypatch.setattr(stages.RawObservationService, "capture", boom)
+    monkeypatch.setattr(stages.ExtractedEvidenceService, "capture", boom)
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
@@ -594,7 +594,7 @@ def test_unexpected_persistence_error_fails_the_run_with_sanitized_status(db, mo
     def kaboom(*_a, **_k):
         raise RuntimeError("psycopg2 connection reset: secret-dsn=postgres://user:pw@host/db")
 
-    monkeypatch.setattr(catalogue_flows, "capture_raw_observations_task", kaboom)
+    monkeypatch.setattr(catalogue_flows, "capture_extracted_evidence_task", kaboom)
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
@@ -699,10 +699,10 @@ def test_ungrounded_model_values_are_dropped_flagged_and_routed_to_review(db, mo
     assert outcome.metadata["grounding_dropped_total"] == 2
 
     # A trimmed claim must reach humans: the staging command forces REQUIRED.
-    from orchestration.catalogue_stage_adapter import staging_command_from_interpretation
+    from orchestration.catalogue_stage_adapter import claim_command_from_interpretation
     from schemas.catalogue_pipeline.enums import ReviewRequirement
 
-    command = staging_command_from_interpretation(item)
+    command = claim_command_from_interpretation(item)
     assert command.review_requirement == ReviewRequirement.REQUIRED
     assert command.metadata["interpretation"]["interpreter"] == "model"
 
@@ -751,10 +751,10 @@ def test_interpreter_provenance_is_recorded_for_model_cells_and_degraded_paths(d
     degraded = interpret_observations((text_row,), (raw_id,), contract)
     assert degraded.items[0].provenance == {"interpreter": "none", "degraded": True}
     assert degraded.metadata["degraded"] is True
-    from orchestration.catalogue_stage_adapter import staging_command_from_interpretation
+    from orchestration.catalogue_stage_adapter import claim_command_from_interpretation
     from schemas.catalogue_pipeline.enums import ReviewRequirement
 
-    assert staging_command_from_interpretation(degraded.items[0]).review_requirement == ReviewRequirement.REQUIRED
+    assert claim_command_from_interpretation(degraded.items[0]).review_requirement == ReviewRequirement.REQUIRED
 
 
 def test_flow_persists_interpretation_accounting_in_run_metrics(db, monkeypatch):

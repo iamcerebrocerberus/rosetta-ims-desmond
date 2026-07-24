@@ -1,18 +1,18 @@
 """Post-Raw interpretation of persisted catalogue evidence.
 
 This module is the only place where verbatim source evidence becomes proposed
-staging fields. It consumes Raw-persisted observations (``raw_text`` or
+interpreted-claim fields. It consumes Raw-persisted observations (``raw_text`` or
 ``raw_cells``) together with the resolved supplier-source contract, and it
 proposes typed fields with per-field evidence pointing back at the supporting
-Raw Observation.
+extracted evidence observation.
 
 Boundaries this module enforces:
 
 - Extraction records; interpretation proposes. Nothing here re-reads the
   source file — only persisted evidence.
 - Non-catalogue lines (titles, section banners, column headers) are skipped
-  from Staging while their Raw Observations remain persisted.
-- Interpretation failures degrade: observations stage with empty proposals and
+  from Staging while their extracted evidence observations remain persisted.
+- Interpretation failures degrade: observations become claims with empty proposals and
   route to human review. They never invent values and never fail the run.
 """
 
@@ -35,7 +35,7 @@ _ROWS_PER_MODEL_CALL = 40
 
 # Semantic field vocabulary shared with the supplier-source contract prompt
 # sections (SourceFieldRole -> output key). Interpretation output is expressed
-# in these keys; staging proposal building consumes them.
+# in these keys; interpreted claim building consumes them.
 _SEMANTIC_KEYS = (
     "supplier_sku",
     "description",
@@ -126,10 +126,10 @@ def interpret_observations(
     raw_observation_ids: tuple[UUID, ...],
     runtime_contract,
 ) -> InterpretationOutcome:
-    """Propose staging fields for persisted observations using the contract."""
+    """Propose interpreted-claim fields for persisted observations using the contract."""
 
     if len(observations) != len(raw_observation_ids):
-        raise ValueError("observations and raw observation ids must align")
+        raise ValueError("observations and evidence ids must align")
 
     warnings: list[str] = []
     pairs = tuple(zip(observations, raw_observation_ids, strict=True))

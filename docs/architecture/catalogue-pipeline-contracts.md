@@ -12,8 +12,8 @@ CIS-103B adds a separate supplier-source contract layer for incoming supplier ca
 
 | Boundary | Contract ID | Question answered | Main rule |
 |---|---|---|---|
-| Source extraction -> Raw Observation | `catalogue.raw_observation.v1` | What did extraction observe, and where? | Requires raw evidence and a meaningful source locator; no review/mastering facts. |
-| Raw Observation -> Staging Catalogue Item | `catalogue.staging_item.v1` | What source fields were present, and what do we propose they mean? | Raw strings and proposed typed fields are separate. |
+| Source extraction -> Raw Observation | `catalogue.extracted_evidence.v1` | What did extraction observe, and where? | Requires raw evidence and a meaningful source locator; no review/mastering facts. |
+| Raw Observation -> Staging Catalogue Item | `catalogue.interpreted_claim.v1` | What source fields were present, and what do we propose they mean? | Raw strings and proposed typed fields are separate. |
 | Staging -> Mastering/HITL | `catalogue.mastering_candidate.v1` | How might this item resolve into canonical and supplier-commercial entities? | It is a candidate; confirmed/approved assertions require lineage. |
 | Cross-cutting validation | `catalogue.validation_issue.v1` | What is uncertain, invalid, contradictory, or needs a business decision? | Blocking open issues prevent publication by definition. |
 | Mastering -> Serving | `catalogue.serving_item.v1` | What approved information can consumers use? | Only `APPROVED` or `APPROVED_WITH_OVERRIDE` records validate. |
@@ -102,7 +102,7 @@ The current SQLAlchemy models remain runtime state, not approved CIS-103 contrac
 | `ReparseChange` | `REUSABLE_WITH_LATER_MIGRATION` | Preserves old/new field diffs before confirmed apply, but values are strings/floats and field semantics are not typed. |
 | Packaging fields (`uom`, `pack_unit`, `units_per_pack`, `pack_size`, order terms) | `SEMANTICALLY_INADEQUATE` | Current fields partially separate sell UOM, buy UOM, pack size, order increment, and MOQ, but content measure and price basis can still be ambiguous. |
 | Validation Issue / durable issue table | `IMPLEMENTED_FOUNDATION` | `catalogue_validation_issues` now stores typed severity/status, review guidance, resolution metadata and publish-blocking query fields. Runtime ingestion does not emit it yet. |
-| Raw Observation table/contract | `IMPLEMENTED_FOUNDATION` | `catalogue_raw_observations` now stores source text/cells, source location, extractor metadata and UUID lineage. Runtime ingestion does not emit it yet. |
+| Raw Observation table/contract | `IMPLEMENTED_FOUNDATION` | `catalogue_extracted_evidence` now stores source text/cells, source location, extractor metadata and UUID lineage. Runtime ingestion does not emit it yet. |
 | Mastering Candidate contract | `MISSING` | Current HITL flow writes to runtime tables; there is no standalone candidate payload with per-section resolution states and lineage. |
 | Serving Item contract | `IMPLEMENTED_FOUNDATION` | `catalogue_serving_publications` now stores approved serving snapshots and lineage. Existing API responses do not read it yet. |
 | Extraction Profile Contract | `MISSING` | Legacy YAML exists, but no typed/versioned Pydantic configuration contract validates supplier-format extraction profiles. |

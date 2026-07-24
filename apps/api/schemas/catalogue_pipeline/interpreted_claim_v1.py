@@ -1,4 +1,4 @@
-"""Staging Catalogue Item Contract v1."""
+"""interpreted claim Contract v1."""
 
 from __future__ import annotations
 
@@ -20,10 +20,10 @@ from .common import (
 from .enums import ReviewRequirement
 
 
-CONTRACT_ID = "catalogue.staging_item.v1"
+CONTRACT_ID = "catalogue.interpreted_claim.v1"
 
 
-class StagingRawFields(ContractModel):
+class ClaimRawFields(ContractModel):
     """Raw source strings preserved separately from Rosetta's proposals."""
 
     supplier_sku: str | None = Field(None, description="Supplier SKU exactly as printed.")
@@ -53,19 +53,19 @@ class ProposedCatalogueFields(ContractModel):
     mbb_terms: list[MbbTerm] = Field(default_factory=list, description="Proposed MBB terms or tiers.")
 
 
-class StagingCatalogueItemV1(ContractModel):
+class InterpretedClaimV1(ContractModel):
     """What business fields Rosetta proposes were present, and what it thinks they mean."""
 
     contract_id = CONTRACT_ID
 
-    contract_version: Literal["catalogue.staging_item.v1"] = Field(
+    contract_version: Literal["catalogue.interpreted_claim.v1"] = Field(
         ...,
-        description="Exact CIS-103 Staging Catalogue Item contract identifier.",
+        description="Exact CIS-103 interpreted claim contract identifier.",
     )
     trace: PipelineTrace = Field(..., description="Common catalogue pipeline trace metadata.")
-    catalogue_item_id: UUID = Field(..., description="Staging Catalogue Item pipeline identity.")
+    catalogue_item_id: UUID = Field(..., description="interpreted claim pipeline identity.")
     raw_observation_ids: list[UUID] = Field(..., min_length=1, description="Raw observations supporting this staged item.")
-    raw_fields: StagingRawFields = Field(..., description="Source strings preserved as evidence.")
+    raw_fields: ClaimRawFields = Field(..., description="Source strings preserved as evidence.")
     proposed_fields: ProposedCatalogueFields = Field(..., description="Typed proposals from parser/model/business rules.")
     review_requirement: ReviewRequirement = Field(..., description="Whether business review is needed.")
     validation_issue_ids: list[UUID] = Field(default_factory=list, description="Validation issues associated with the staged item.")
@@ -73,12 +73,12 @@ class StagingCatalogueItemV1(ContractModel):
     metadata: JsonObject = Field(default_factory=dict, description="Explicit extension point for non-contract metadata.")
 
     @model_validator(mode="after")
-    def _staging_requires_observation_link(self):
+    def _claim_requires_evidence_link(self):
         if not self.raw_observation_ids:
-            raise ValueError("Staging Catalogue Item requires at least one Raw Observation link")
+            raise ValueError("interpreted claim requires at least one extracted evidence observation link")
         if len(self.raw_observation_ids) != len(set(self.raw_observation_ids)):
-            raise ValueError("Staging Catalogue Item raw_observation_ids must be unique")
+            raise ValueError("interpreted claim raw_observation_ids must be unique")
         return self
 
 
-register_contract(StagingCatalogueItemV1)
+register_contract(InterpretedClaimV1)

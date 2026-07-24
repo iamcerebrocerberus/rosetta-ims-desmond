@@ -51,9 +51,9 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueStagingRawObservation,
-        models.CatalogueStagingItem,
-        models.CatalogueRawObservation,
+        models.CatalogueInterpretedClaimEvidence,
+        models.CatalogueInterpretedClaim,
+        models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
     ):
@@ -128,7 +128,7 @@ def _seed_context(
 
 
 def _raw_input(key="row-1", text='10447 Healthy Cuisine 24/2.9 oz HK$13.10'):
-    return stages.RawObservationInput(
+    return stages.ExtractedEvidenceInput(
         idempotency_key=key,
         source_location={"page_number": 1, "source_object_key": key},
         raw_text=text,
@@ -142,8 +142,8 @@ def _raw_input(key="row-1", text='10447 Healthy Cuisine 24/2.9 oz HK$13.10'):
 
 
 def _capture_raw(db, *, run_id=RUN_ID, source_id=SOURCE_ID, file_id=FILE_ID, key="row-1"):
-    return stages.RawObservationService(db).capture(
-        stages.CaptureRawObservationsCommand(
+    return stages.ExtractedEvidenceService(db).capture(
+        stages.CaptureExtractedEvidenceCommand(
             ingestion_run_id=run_id,
             supplier_catalogue_id=source_id,
             source_file_id=file_id,
@@ -199,9 +199,9 @@ def _proposed_fields(raw_id: UUID, *, include_cost=True, include_packaging=True)
     return proposed
 
 
-def _build_staging(db, raw_id: UUID, *, include_cost=True, include_packaging=True, key="stage-row-1"):
-    return stages.StagingCatalogueService(db).build_item(
-        stages.BuildStagingItemCommand(
+def _build_claim(db, raw_id: UUID, *, include_cost=True, include_packaging=True, key="stage-row-1"):
+    return stages.InterpretedClaimService(db).build_item(
+        stages.BuildInterpretedClaimCommand(
             raw_observation_ids=(raw_id,),
             raw_fields=_raw_fields(),
             proposed_fields=_proposed_fields(raw_id, include_cost=include_cost, include_packaging=include_packaging),
@@ -254,8 +254,8 @@ def _prepare_candidate(db, staging_id: UUID, *, key="candidate-row-1"):
 def test_raw_capture_uses_supported_contract_and_is_idempotent(db):
     _seed_context(db)
 
-    service = stages.RawObservationService(db)
-    command = stages.CaptureRawObservationsCommand(
+    service = stages.ExtractedEvidenceService(db)
+    command = stages.CaptureExtractedEvidenceCommand(
         ingestion_run_id=RUN_ID,
         supplier_catalogue_id=SOURCE_ID,
         source_file_id=FILE_ID,
@@ -268,13 +268,13 @@ def test_raw_capture_uses_supported_contract_and_is_idempotent(db):
 
     assert first.metrics.created_count == 1
     assert second.metrics.reused_count == 1
-    assert db.query(models.CatalogueRawObservation).count() == 1
-    row = db.query(models.CatalogueRawObservation).one()
+    assert db.query(models.CatalogueExtractedEvidence).count() == 1
+    row = db.query(models.CatalogueExtractedEvidence).one()
     assert row.raw_text == '10447 Healthy Cuisine 24/2.9 oz HK$13.10'
     assert row.extraction_profile_id == "hills.price_list.v1"
     assert row.extraction_confidence == Decimal("0.9600")
 
-    changed = stages.CaptureRawObservationsCommand(
+    changed = stages.CaptureExtractedEvidenceCommand(
         ingestion_run_id=RUN_ID,
         supplier_catalogue_id=SOURCE_ID,
         source_file_id=FILE_ID,
@@ -294,8 +294,8 @@ def test_raw_capture_rejects_unverified_supplier_contract(db):
     )
 
     with pytest.raises(stages.UnsupportedSupplierContract, match="not SUPPORTED"):
-        stages.RawObservationService(db).capture(
-            stages.CaptureRawObservationsCommand(
+        stages.ExtractedEvidenceService(db).capture(
+            stages.CaptureExtractedEvidenceCommand(
                 ingestion_run_id=RUN_ID,
                 supplier_catalogue_id=SOURCE_ID,
                 source_file_id=FILE_ID,
@@ -311,8 +311,8 @@ def test_staging_preserves_lineage_and_rejects_cross_run_grouping(db):
     raw_1 = _capture_raw(db)
     raw_2 = _capture_raw(db, run_id=RUN_ID_2, source_id=SOURCE_ID_2, file_id=FILE_ID_2, key="row-2")
 
-    result = stages.StagingCatalogueService(db).build_item(
-        stages.BuildStagingItemCommand(
+    result = stages.InterpretedClaimService(db).build_item(
+        stages.BuildInterpretedClaimCommand(
             raw_observation_ids=(raw_1,),
             raw_fields=_raw_fields(),
             proposed_fields=_proposed_fields(raw_1),
@@ -321,13 +321,13 @@ def test_staging_preserves_lineage_and_rejects_cross_run_grouping(db):
     )
 
     assert result.metrics.created_count == 1
-    staging = db.query(models.CatalogueStagingItem).one()
+    staging = db.query(models.CatalogueInterpretedClaim).one()
     assert staging.raw_fields_json != staging.proposed_fields_json
-    assert db.query(models.CatalogueStagingRawObservation).filter_by(raw_observation_uuid=str(raw_1)).count() == 1
+    assert db.query(models.CatalogueInterpretedClaimEvidence).filter_by(raw_observation_uuid=str(raw_1)).count() == 1
 
     with pytest.raises(stages.MissingOrIncompatibleLineage, match="different ingestion runs"):
-        stages.StagingCatalogueService(db).build_item(
-            stages.BuildStagingItemCommand(
+        stages.InterpretedClaimService(db).build_item(
+            stages.BuildInterpretedClaimCommand(
                 raw_observation_ids=(raw_1, raw_2),
                 raw_fields=_raw_fields(),
                 proposed_fields=_proposed_fields(raw_1),
@@ -336,8 +336,8 @@ def test_staging_preserves_lineage_and_rejects_cross_run_grouping(db):
         )
 
     with pytest.raises(stages.MissingOrIncompatibleLineage, match="duplicates"):
-        stages.StagingCatalogueService(db).build_item(
-            stages.BuildStagingItemCommand(
+        stages.InterpretedClaimService(db).build_item(
+            stages.BuildInterpretedClaimCommand(
                 raw_observation_ids=(raw_1, raw_1),
                 raw_fields=_raw_fields(),
                 proposed_fields=_proposed_fields(raw_1),
@@ -349,11 +349,11 @@ def test_staging_preserves_lineage_and_rejects_cross_run_grouping(db):
 def test_validation_dedupes_resolves_and_blocks_mastering_until_resolved(db):
     _seed_context(db)
     raw_id = _capture_raw(db)
-    staging_id = _build_staging(db, raw_id, include_cost=False, include_packaging=False)
+    staging_id = _build_claim(db, raw_id, include_cost=False, include_packaging=False)
 
     validation = stages.CatalogueValidationService(db)
-    first = validation.evaluate_staging(stages.EvaluateStagingCommand(catalogue_item_id=staging_id))
-    second = validation.evaluate_staging(stages.EvaluateStagingCommand(catalogue_item_id=staging_id))
+    first = validation.evaluate_claim(stages.EvaluateInterpretedClaimCommand(catalogue_item_id=staging_id))
+    second = validation.evaluate_claim(stages.EvaluateInterpretedClaimCommand(catalogue_item_id=staging_id))
 
     assert first.metrics.created_count == 2
     assert second.metrics.reused_count == 2
@@ -385,7 +385,7 @@ def test_stage_services_apply_approved_candidate_and_publish_idempotently(db):
     _seed_context(db)
     _seed_product(db)
     raw_id = _capture_raw(db)
-    staging_id = _build_staging(db, raw_id)
+    staging_id = _build_claim(db, raw_id)
     candidate_id = _prepare_candidate(db, staging_id)
 
     with pytest.raises(stages.PublicationIneligible):
@@ -476,7 +476,7 @@ def test_stage_services_apply_approved_candidate_and_publish_idempotently(db):
 def test_review_rejects_stale_candidate_revision_and_staging_key_conflicts(db):
     _seed_context(db)
     raw_id = _capture_raw(db)
-    staging_id = _build_staging(db, raw_id)
+    staging_id = _build_claim(db, raw_id)
     candidate_id = _prepare_candidate(db, staging_id)
 
     with pytest.raises(stages.StaleCandidateRevision):
@@ -491,8 +491,8 @@ def test_review_rejects_stale_candidate_revision_and_staging_key_conflicts(db):
         )
 
     with pytest.raises(stages.IdempotencyConflict):
-        stages.StagingCatalogueService(db).build_item(
-            stages.BuildStagingItemCommand(
+        stages.InterpretedClaimService(db).build_item(
+            stages.BuildInterpretedClaimCommand(
                 raw_observation_ids=(raw_id,),
                 raw_fields={**_raw_fields(), "product_name": "Changed"},
                 proposed_fields=_proposed_fields(raw_id),
@@ -507,7 +507,7 @@ from services import catalogue_pipeline_persistence as persistence  # noqa: E402
 
 
 def _cell_input(key, *, column_name, raw_value, row_number, page=1):
-    return stages.RawObservationInput(
+    return stages.ExtractedEvidenceInput(
         idempotency_key=key,
         source_location={"page_number": page, "source_object_key": key},
         raw_cells=(
@@ -537,8 +537,8 @@ def _cell_input(key, *, column_name, raw_value, row_number, page=1):
 def test_stage4_persists_verbatim_evidence_metadata_and_lineage(db):
     _seed_context(db)
 
-    result = stages.RawObservationService(db).capture(
-        stages.CaptureRawObservationsCommand(
+    result = stages.ExtractedEvidenceService(db).capture(
+        stages.CaptureExtractedEvidenceCommand(
             ingestion_run_id=RUN_ID,
             supplier_catalogue_id=SOURCE_ID,
             source_file_id=FILE_ID,
@@ -547,8 +547,8 @@ def test_stage4_persists_verbatim_evidence_metadata_and_lineage(db):
         )
     )
 
-    row = db.query(models.CatalogueRawObservation).one()
-    contract = persistence.raw_observation_to_contract(row)
+    row = db.query(models.CatalogueExtractedEvidence).one()
+    contract = persistence.extracted_evidence_to_contract(row)
     # Lineage survives persistence + reconstruction.
     assert contract.ingestion_run_id == RUN_ID
     assert contract.supplier_catalogue_id == SOURCE_ID
@@ -569,8 +569,8 @@ def test_stage4_persists_verbatim_evidence_metadata_and_lineage(db):
 def test_stage4_keeps_duplicate_rows_at_different_locations_distinct(db):
     _seed_context(db)
 
-    result = stages.RawObservationService(db).capture(
-        stages.CaptureRawObservationsCommand(
+    result = stages.ExtractedEvidenceService(db).capture(
+        stages.CaptureExtractedEvidenceCommand(
             ingestion_run_id=RUN_ID,
             supplier_catalogue_id=SOURCE_ID,
             source_file_id=FILE_ID,
@@ -586,7 +586,7 @@ def test_stage4_keeps_duplicate_rows_at_different_locations_distinct(db):
     # distinct persisted observations — never deduplicated by text.
     assert result.metrics.created_count == 2
     assert len(set(result.output_ids)) == 2
-    texts = [row.raw_text for row in db.query(models.CatalogueRawObservation).all()]
+    texts = [row.raw_text for row in db.query(models.CatalogueExtractedEvidence).all()]
     assert texts == ["10447 Chicken 82g HK$13.10", "10447 Chicken 82g HK$13.10"]
 
 
@@ -595,15 +595,15 @@ def test_stage4_batch_is_atomic_no_partial_persistence_on_failure(db):
 
     # Second observation in the batch is structurally invalid (bad source
     # location) and raises during contract construction.
-    bad = stages.RawObservationInput(
+    bad = stages.ExtractedEvidenceInput(
         idempotency_key="page:1:line:2",
         source_location={"page_number": "not-an-int", "source_object_key": "page:1:line:2"},
         raw_text="10448 Second HK$14.00",
         extraction_method="MODEL_TEXT",
     )
     with pytest.raises(Exception):
-        stages.RawObservationService(db).capture(
-            stages.CaptureRawObservationsCommand(
+        stages.ExtractedEvidenceService(db).capture(
+            stages.CaptureExtractedEvidenceCommand(
                 ingestion_run_id=RUN_ID,
                 supplier_catalogue_id=SOURCE_ID,
                 source_file_id=FILE_ID,
@@ -614,28 +614,28 @@ def test_stage4_batch_is_atomic_no_partial_persistence_on_failure(db):
 
     db.rollback()
     # The earlier observation in the same batch must not remain committed.
-    assert db.query(models.CatalogueRawObservation).count() == 0
+    assert db.query(models.CatalogueExtractedEvidence).count() == 0
 
 
 def test_stage4_replay_reuses_observations_and_material_conflict_is_controlled(db):
     _seed_context(db)
-    command = stages.CaptureRawObservationsCommand(
+    command = stages.CaptureExtractedEvidenceCommand(
         ingestion_run_id=RUN_ID,
         supplier_catalogue_id=SOURCE_ID,
         source_file_id=FILE_ID,
         supplier_id=14,
         observations=(_raw_input(key="page:1:obs:zz:1", text="10447 Chicken HK$13.10"),),
     )
-    service = stages.RawObservationService(db)
+    service = stages.ExtractedEvidenceService(db)
 
     first = service.capture(command)
     replay = service.capture(command)
     assert first.output_ids == replay.output_ids
     assert replay.metrics.reused_count == 1
-    assert db.query(models.CatalogueRawObservation).count() == 1
+    assert db.query(models.CatalogueExtractedEvidence).count() == 1
 
     # Same identity, materially different evidence -> controlled conflict.
-    conflict = stages.CaptureRawObservationsCommand(
+    conflict = stages.CaptureExtractedEvidenceCommand(
         ingestion_run_id=RUN_ID,
         supplier_catalogue_id=SOURCE_ID,
         source_file_id=FILE_ID,
@@ -651,7 +651,7 @@ def test_stage4_replay_reuses_observations_and_material_conflict_is_controlled(d
 from decimal import Decimal as _Decimal  # noqa: E402
 
 from orchestration.catalogue_stage_adapter import raw_input_from_extracted_evidence  # noqa: E402
-from schemas.catalogue_pipeline.raw_observation_v1 import BoundingBox, SourceLocation  # noqa: E402
+from schemas.catalogue_pipeline.extracted_evidence_v1 import BoundingBox, SourceLocation  # noqa: E402
 from services.catalogue_evidence_extraction import ExtractedEvidence  # noqa: E402
 
 
@@ -684,8 +684,8 @@ def _vision_evidence(
 
 
 def _capture_evidence(db, evidence_items):
-    return stages.RawObservationService(db).capture(
-        stages.CaptureRawObservationsCommand(
+    return stages.ExtractedEvidenceService(db).capture(
+        stages.CaptureExtractedEvidenceCommand(
             ingestion_run_id=RUN_ID,
             supplier_catalogue_id=SOURCE_ID,
             source_file_id=FILE_ID,
@@ -710,12 +710,12 @@ def test_replay_with_new_provider_request_id_reuses_the_immutable_observation(db
     assert replay.metrics.reused_count == 1
     assert replay.metrics.created_count == 0
     assert replay.output_ids == first.output_ids
-    assert db.query(models.CatalogueRawObservation).count() == 1
+    assert db.query(models.CatalogueExtractedEvidence).count() == 1
 
     # The first-persisted observation is immutable: original request id and
     # confidence are retained; the replay's values are never written over it.
-    row = db.query(models.CatalogueRawObservation).one()
-    contract = persistence.raw_observation_to_contract(row)
+    row = db.query(models.CatalogueExtractedEvidence).one()
+    contract = persistence.extracted_evidence_to_contract(row)
     assert contract.source_metadata["provider_request_id"] == "msg_a"
     assert contract.extraction_confidence == _Decimal("0.91")
 
@@ -738,13 +738,13 @@ def test_bounding_box_and_location_changes_are_material(db):
     moved = _vision_evidence(key="page:1:obs:abc123def456:2", box=(5, 400, 300, 20))
     result = _capture_evidence(db, [moved])
     assert result.metrics.created_count == 1
-    assert db.query(models.CatalogueRawObservation).count() == 2
+    assert db.query(models.CatalogueExtractedEvidence).count() == 2
 
     # Same text on a different page is likewise distinct.
     other_page = _vision_evidence(key="page:2:obs:abc123def456:1", page=2)
     result = _capture_evidence(db, [other_page])
     assert result.metrics.created_count == 1
-    assert db.query(models.CatalogueRawObservation).count() == 3
+    assert db.query(models.CatalogueExtractedEvidence).count() == 3
 
 
 def test_reordered_replay_batch_is_fully_reused(db):
@@ -766,7 +766,7 @@ def test_reordered_replay_batch_is_fully_reused(db):
     assert replay.metrics.reused_count == 2
     assert replay.metrics.created_count == 0
     assert set(replay.output_ids) == set(first.output_ids)
-    assert db.query(models.CatalogueRawObservation).count() == 2
+    assert db.query(models.CatalogueExtractedEvidence).count() == 2
 
 
 # ── Intermediate 5-6: persisted-evidence handoff, atomic claims, claim replay ─
@@ -774,7 +774,7 @@ def test_reordered_replay_batch_is_fully_reused(db):
 import copy  # noqa: E402
 
 from orchestration.catalogue_stage_adapter import evidence_from_persisted_observation  # noqa: E402
-from orchestration.catalogue_tasks import build_staging_items_task  # noqa: E402
+from orchestration.catalogue_tasks import build_interpreted_claims_task  # noqa: E402
 from services.catalogue_interpretation import InterpretationOutcome, InterpretedItem  # noqa: E402
 
 
@@ -782,8 +782,8 @@ def test_interpretation_input_reconstructs_faithfully_from_persisted_evidence(db
     _seed_context(db)
     raw_id = _capture_raw(db, key="page:1:line:7")
 
-    row = db.query(models.CatalogueRawObservation).one()
-    contract = persistence.raw_observation_to_contract(row)
+    row = db.query(models.CatalogueExtractedEvidence).one()
+    contract = persistence.extracted_evidence_to_contract(row)
     evidence = evidence_from_persisted_observation(contract)
 
     assert evidence.observation_key == "page:1:line:7"  # from persisted source_metadata/location
@@ -813,22 +813,22 @@ def test_claim_batch_is_atomic_no_partial_claims_on_failure(db):
     )
 
     with pytest.raises(Exception):
-        build_staging_items_task.fn(InterpretationOutcome(items=(good, bad)))
+        build_interpreted_claims_task.fn(InterpretationOutcome(items=(good, bad)))
 
-    assert db.query(models.CatalogueStagingItem).count() == 0
+    assert db.query(models.CatalogueInterpretedClaim).count() == 0
 
 
 def test_claim_replay_with_confidence_drift_reuses_the_immutable_first_claim(db):
     _seed_context(db)
     raw_id = _capture_raw(db, key="claim-replay-1")
-    service = stages.StagingCatalogueService(db)
+    service = stages.InterpretedClaimService(db)
 
     def _command(confidence: str):
         proposed = copy.deepcopy(_proposed_fields(raw_id))
         for value in proposed.values():
             if isinstance(value, dict) and isinstance(value.get("evidence"), dict):
                 value["evidence"]["confidence"] = confidence
-        return stages.BuildStagingItemCommand(
+        return stages.BuildInterpretedClaimCommand(
             raw_observation_ids=(raw_id,),
             raw_fields=_raw_fields(),
             proposed_fields=proposed,
@@ -841,13 +841,13 @@ def test_claim_replay_with_confidence_drift_reuses_the_immutable_first_claim(db)
 
     assert first.output_ids == replay.output_ids
     assert replay.metrics.reused_count == 1
-    assert db.query(models.CatalogueStagingItem).count() == 1
+    assert db.query(models.CatalogueInterpretedClaim).count() == 1
     # Genuine proposal drift under the same identity stays a controlled conflict.
     drifted = copy.deepcopy(_proposed_fields(raw_id))
     drifted["product_name"]["value"] = "A Different Product Name"
     with pytest.raises(stages.IdempotencyConflict):
         service.build_item(
-            stages.BuildStagingItemCommand(
+            stages.BuildInterpretedClaimCommand(
                 raw_observation_ids=(raw_id,),
                 raw_fields=_raw_fields(),
                 proposed_fields=drifted,

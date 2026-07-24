@@ -1,7 +1,7 @@
 """Typed supplier-source catalogue contract declarations.
 
 These models describe incoming supplier catalogue formats. They are deliberately
-separate from the shared Raw Observation, Staging, Mastering, and Serving
+separate from the shared extracted evidence observation, Staging, Mastering, and Serving
 pipeline payload contracts.
 """
 
@@ -164,7 +164,7 @@ class SourceStructure(SupplierSourceModel):
     skip_rules: list[str] = Field(default_factory=list, description="Rows or sections intentionally skipped.")
     source_location_expectations: list[str] = Field(
         default_factory=list,
-        description="Expected source locations needed by Raw Observation, for example page and row.",
+        description="Expected source locations needed by extracted evidence observation, for example page and row.",
     )
 
 
@@ -293,13 +293,13 @@ class AmbiguityRule(SupplierSourceModel):
 class PipelineContractMapping(SupplierSourceModel):
     """Mapping from a supplier-source contract into shared pipeline payloads."""
 
-    raw_observation_contract_id: Literal["catalogue.raw_observation.v1"] = Field(
-        "catalogue.raw_observation.v1",
-        description="Shared Raw Observation contract produced from source evidence.",
+    raw_observation_contract_id: Literal["catalogue.extracted_evidence.v1"] = Field(
+        "catalogue.extracted_evidence.v1",
+        description="Shared extracted evidence observation contract produced from source evidence.",
     )
-    staging_item_contract_id: Literal["catalogue.staging_item.v1"] = Field(
-        "catalogue.staging_item.v1",
-        description="Shared Staging Catalogue Item contract receiving proposed interpretations.",
+    staging_item_contract_id: Literal["catalogue.interpreted_claim.v1"] = Field(
+        "catalogue.interpreted_claim.v1",
+        description="Shared interpreted claim contract receiving proposed interpretations.",
     )
     raw_observation_fields: list[str] = Field(..., min_length=1, description="Source field keys preserved as raw evidence.")
     staging_raw_field_keys: list[str] = Field(..., min_length=1, description="Source field keys copied to staging.raw_fields.")

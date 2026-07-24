@@ -1,5 +1,156 @@
 {
   "$defs": {
+    "ClaimRawFields": {
+      "additionalProperties": false,
+      "description": "Raw source strings preserved separately from Rosetta's proposals.",
+      "properties": {
+        "barcode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Barcode exactly as printed.",
+          "title": "Barcode"
+        },
+        "brand": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Brand text exactly as printed.",
+          "title": "Brand"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Category/section text exactly as printed.",
+          "title": "Category"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Cost text exactly as printed, including symbols or notes.",
+          "title": "Cost"
+        },
+        "mbb_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Raw Max Bulk Buy / discount text.",
+          "title": "Mbb Text"
+        },
+        "original_product_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Original source-language name when translated.",
+          "title": "Original Product Name"
+        },
+        "packaging": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Packaging text exactly as printed.",
+          "title": "Packaging"
+        },
+        "product_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Product name/description exactly as printed or translated.",
+          "title": "Product Name"
+        },
+        "source_row_label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable source row label when useful.",
+          "title": "Source Row Label"
+        },
+        "supplier_sku": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Supplier SKU exactly as printed.",
+          "title": "Supplier Sku"
+        },
+        "variant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Variant/size/flavour text exactly as printed.",
+          "title": "Variant"
+        }
+      },
+      "title": "ClaimRawFields",
+      "type": "object"
+    },
     "Cost": {
       "additionalProperties": false,
       "description": "Basis-aware supplier cost.",
@@ -188,7 +339,7 @@
           "title": "Note"
         },
         "raw_observation_id": {
-          "description": "Raw Observation that supports this field.",
+          "description": "extracted evidence observation that supports this field.",
           "format": "uuid",
           "title": "Raw Observation Id",
           "type": "string"
@@ -854,157 +1005,6 @@
       "title": "ReviewRequirement",
       "type": "string"
     },
-    "StagingRawFields": {
-      "additionalProperties": false,
-      "description": "Raw source strings preserved separately from Rosetta's proposals.",
-      "properties": {
-        "barcode": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Barcode exactly as printed.",
-          "title": "Barcode"
-        },
-        "brand": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Brand text exactly as printed.",
-          "title": "Brand"
-        },
-        "category": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Category/section text exactly as printed.",
-          "title": "Category"
-        },
-        "cost": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Cost text exactly as printed, including symbols or notes.",
-          "title": "Cost"
-        },
-        "mbb_text": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Raw Max Bulk Buy / discount text.",
-          "title": "Mbb Text"
-        },
-        "original_product_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Original source-language name when translated.",
-          "title": "Original Product Name"
-        },
-        "packaging": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Packaging text exactly as printed.",
-          "title": "Packaging"
-        },
-        "product_name": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Product name/description exactly as printed or translated.",
-          "title": "Product Name"
-        },
-        "source_row_label": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Human-readable source row label when useful.",
-          "title": "Source Row Label"
-        },
-        "supplier_sku": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Supplier SKU exactly as printed.",
-          "title": "Supplier Sku"
-        },
-        "variant": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Variant/size/flavour text exactly as printed.",
-          "title": "Variant"
-        }
-      },
-      "title": "StagingRawFields",
-      "type": "object"
-    },
     "TextProposal": {
       "additionalProperties": false,
       "description": "Proposed text value plus optional field-level evidence.",
@@ -1101,22 +1101,22 @@
       "type": "object"
     }
   },
-  "$id": "https://rosetta-ims.local/contracts/catalogue-pipeline/v1/catalogue.staging_item.v1.schema.json",
+  "$id": "https://rosetta-ims.local/contracts/catalogue-pipeline/v1/catalogue.interpreted_claim.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "What business fields Rosetta proposes were present, and what it thinks they mean.",
   "properties": {
     "catalogue_item_id": {
-      "description": "Staging Catalogue Item pipeline identity.",
+      "description": "interpreted claim pipeline identity.",
       "format": "uuid",
       "title": "Catalogue Item Id",
       "type": "string"
     },
     "contract_version": {
-      "const": "catalogue.staging_item.v1",
-      "description": "Exact CIS-103 Staging Catalogue Item contract identifier.",
+      "const": "catalogue.interpreted_claim.v1",
+      "description": "Exact CIS-103 interpreted claim contract identifier.",
       "enum": [
-        "catalogue.staging_item.v1"
+        "catalogue.interpreted_claim.v1"
       ],
       "title": "Contract Version",
       "type": "string"
@@ -1137,7 +1137,7 @@
       "description": "Typed proposals from parser/model/business rules."
     },
     "raw_fields": {
-      "$ref": "#/$defs/StagingRawFields",
+      "$ref": "#/$defs/ClaimRawFields",
       "description": "Source strings preserved as evidence."
     },
     "raw_observation_ids": {
@@ -1178,6 +1178,6 @@
     "review_requirement",
     "created_at"
   ],
-  "title": "StagingCatalogueItemV1",
+  "title": "InterpretedClaimV1",
   "type": "object"
 }

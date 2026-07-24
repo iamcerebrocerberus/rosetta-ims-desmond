@@ -307,11 +307,11 @@
       "description": "Mapping from a supplier-source contract into shared pipeline payloads.",
       "properties": {
         "raw_observation_contract_id": {
-          "const": "catalogue.raw_observation.v1",
-          "default": "catalogue.raw_observation.v1",
-          "description": "Shared Raw Observation contract produced from source evidence.",
+          "const": "catalogue.extracted_evidence.v1",
+          "default": "catalogue.extracted_evidence.v1",
+          "description": "Shared extracted evidence observation contract produced from source evidence.",
           "enum": [
-            "catalogue.raw_observation.v1"
+            "catalogue.extracted_evidence.v1"
           ],
           "title": "Raw Observation Contract Id",
           "type": "string"
@@ -326,11 +326,11 @@
           "type": "array"
         },
         "staging_item_contract_id": {
-          "const": "catalogue.staging_item.v1",
-          "default": "catalogue.staging_item.v1",
-          "description": "Shared Staging Catalogue Item contract receiving proposed interpretations.",
+          "const": "catalogue.interpreted_claim.v1",
+          "default": "catalogue.interpreted_claim.v1",
+          "description": "Shared interpreted claim contract receiving proposed interpretations.",
           "enum": [
-            "catalogue.staging_item.v1"
+            "catalogue.interpreted_claim.v1"
           ],
           "title": "Staging Item Contract Id",
           "type": "string"
@@ -670,7 +670,7 @@
           "description": "Physical source format."
         },
         "source_location_expectations": {
-          "description": "Expected source locations needed by Raw Observation, for example page and row.",
+          "description": "Expected source locations needed by extracted evidence observation, for example page and row.",
           "items": {
             "type": "string"
           },

@@ -46,9 +46,9 @@ from .enums import (
 )
 from .extraction_profile_v1 import ExtractionProfileV1
 from .mastering_candidate_v1 import MasteringCandidateV1
-from .raw_observation_v1 import RawObservationV1
+from .extracted_evidence_v1 import ExtractedEvidenceV1
 from .serving_item_v1 import ServingItemV1
-from .staging_item_v1 import StagingCatalogueItemV1
+from .interpreted_claim_v1 import InterpretedClaimV1
 from .validation_issue_v1 import ValidationIssueV1
 
 __all__ = [
@@ -85,13 +85,13 @@ __all__ = [
     "PositiveMoney",
     "ProfileMatchStrategy",
     "Quantity",
-    "RawObservationV1",
+    "ExtractedEvidenceV1",
     "ResolutionState",
     "ReviewRequirement",
     "ReviewStatus",
     "ServingItemV1",
     "SourceFormat",
-    "StagingCatalogueItemV1",
+    "InterpretedClaimV1",
     "SupplierReference",
     "TextProposal",
     "UnitCode",

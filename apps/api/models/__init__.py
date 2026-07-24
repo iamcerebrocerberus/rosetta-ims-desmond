@@ -5,7 +5,7 @@ One registry, two families:
 - ``models.legacy`` — the long-lived inventory/ops domain (users, auth, audit,
   products, suppliers, stock, pricing, tags, reparse, legacy catalogue import).
 - catalogue pipeline modules — the evidence-first ingestion pipeline
-  (source documents, ingestion runs, raw observations, staging, validation,
+  (source documents, ingestion runs, extracted evidence observations, staging, validation,
   mastering, serving) that superseded the legacy synchronous catalogue flow.
 
 Every model is re-exported here so call sites use one import surface
@@ -24,13 +24,13 @@ from models.catalogue_pipeline import (  # noqa: F401
     CatalogueMasteringCandidate,
     CataloguePackagingConfiguration,
     CatalogueProductFamily,
-    CatalogueRawObservation,
+    CatalogueExtractedEvidence,
     CatalogueRawStageAttempt,
     CatalogueReviewDecision,
     CatalogueServingPublication,
     CatalogueSourceDocument,
-    CatalogueStagingItem,
-    CatalogueStagingRawObservation,
+    CatalogueInterpretedClaim,
+    CatalogueInterpretedClaimEvidence,
     CatalogueSupplierMbbTerm,
     CatalogueSupplierPrice,
     CatalogueSupplierProduct,

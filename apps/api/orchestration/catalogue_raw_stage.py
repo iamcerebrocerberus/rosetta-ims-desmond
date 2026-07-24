@@ -25,7 +25,7 @@ extraction, interpretation, normalization or business validation. Anything
 that tries to understand what the file MEANS belongs to the extraction stage
 and later stages, which consume the stored original through its durable
 ``source_ref`` after this stage has completed. Terminology note: the
-``CatalogueRawObservation`` model is NOT this stage's output — it holds
+``CatalogueExtractedEvidence`` model is NOT this stage's output — it holds
 extracted evidence observations produced by the extraction stage.
 """
 

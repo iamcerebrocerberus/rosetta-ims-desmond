@@ -52,6 +52,34 @@ def get_db():
         db.close()
 
 
+# ── Catalogue pipeline: build fresh, drop superseded tables ──────────────────
+# The catalogue pipeline is built fresh, not data-migrated. Tables superseded by
+# the timeline-consistent rename (raw_observation -> extracted_evidence,
+# staging_item -> interpreted_claim) are DROPPED before create_all, which then
+# builds the current schema. No rename, no data preservation, no migration
+# history for these tables — an explicit project choice. Guarded by existence;
+# a no-op on fresh databases. Link table first so any FK dependency is gone
+# before its referenced tables are dropped.
+_SUPERSEDED_CATALOGUE_TABLES = [
+    "catalogue_staging_raw_observations",
+    "catalogue_raw_observations",
+    "catalogue_staging_items",
+]
+
+
+def drop_superseded_catalogue_tables(engine):
+    """Drop catalogue pipeline tables replaced by the current schema so
+    create_all rebuilds them fresh. No-op when they do not exist."""
+    from sqlalchemy import inspect
+
+    existing = set(inspect(engine).get_table_names())
+    with engine.connect() as conn:
+        for table in _SUPERSEDED_CATALOGUE_TABLES:
+            if table in existing:
+                conn.execute(text(f'DROP TABLE IF EXISTS {table}'))
+                conn.commit()
+
+
 # Columns added to the models AFTER a Postgres database was first created from
 # create_all(). create_all() never alters existing tables, so without these the
 # ORM references columns Postgres doesn't have (the exact drift that broke the

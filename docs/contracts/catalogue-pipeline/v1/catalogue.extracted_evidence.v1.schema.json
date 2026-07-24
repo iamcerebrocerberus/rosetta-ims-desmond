@@ -273,7 +273,7 @@
       "type": "object"
     }
   },
-  "$id": "https://rosetta-ims.local/contracts/catalogue-pipeline/v1/catalogue.raw_observation.v1.schema.json",
+  "$id": "https://rosetta-ims.local/contracts/catalogue-pipeline/v1/catalogue.extracted_evidence.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "What the extraction system observed in the source catalogue, and where.",
@@ -285,10 +285,10 @@
       "type": "string"
     },
     "contract_version": {
-      "const": "catalogue.raw_observation.v1",
-      "description": "Exact CIS-103 Raw Observation contract identifier.",
+      "const": "catalogue.extracted_evidence.v1",
+      "description": "Exact CIS-103 extracted evidence observation contract identifier.",
       "enum": [
-        "catalogue.raw_observation.v1"
+        "catalogue.extracted_evidence.v1"
       ],
       "title": "Contract Version",
       "type": "string"
@@ -360,7 +360,7 @@
       "type": "array"
     },
     "raw_observation_id": {
-      "description": "Raw Observation pipeline identity.",
+      "description": "extracted evidence observation pipeline identity.",
       "format": "uuid",
       "title": "Raw Observation Id",
       "type": "string"
@@ -411,6 +411,6 @@
     "extraction_method",
     "captured_at"
   ],
-  "title": "RawObservationV1",
+  "title": "ExtractedEvidenceV1",
   "type": "object"
 }

@@ -6,7 +6,7 @@ Date: 2026-07-23
 This document defines the Prefect orchestration boundary for v2 catalogue
 ingestion. The v2 submission endpoint durably creates a queued `IngestionRun`;
 this orchestration layer claims that queued run and coordinates the
-machine-executable stages through Raw Observation, Staging, Validation Issue and
+machine-executable stages through Extracted Evidence, Interpreted Claim, Validation Issue and
 pending-review Mastering Candidate creation.
 
 The flow does not approve, apply supplier commercial state, publish Serving
@@ -23,7 +23,7 @@ The implementation builds on the current persistence and service foundations:
 | Source asset persistence | `CatalogueSourceDocument` stores source UUIDs, checksum, source ref, supplier, contract ID/version, document type and source format. | The source loader verifies path safety, file signature and SHA-256 before extraction. |
 | Run lifecycle | `IngestionRun` supports `queued`, `running`, `completed`, `completed_with_warnings`, `failed` and `cancelled`; `started_at` is nullable for queued runs. | The lifecycle service atomically claims queued runs and writes truthful terminal state. |
 | Supplier-source contracts | `supplier_source_contract_runtime.resolve_supplier_contract` rejects unknown, ambiguous and unsupported contracts. | Orchestration resolves the exact recorded ID/version only. |
-| Stage services | `RawObservationService`, `StagingCatalogueService`, `CatalogueValidationService` and `MasteringService` are framework-neutral. | Prefect tasks call these services without importing FastAPI or leaking ORM objects between tasks. |
+| Stage services | `ExtractedEvidenceService`, `InterpretedClaimService`, `CatalogueValidationService` and `MasteringService` are framework-neutral. | Prefect tasks call these services without importing FastAPI or leaking ORM objects between tasks. |
 | v1 compatibility | `/v1/catalogues/import` still performs synchronous legacy extraction. | The Prefect path does not change v1 behavior. |
 
 ## Prefect Dependency
@@ -60,11 +60,11 @@ Task sequence:
 | `complete-raw-stage` | File-only raw stage: verify the stored original (existence, size, path safety, signature, checksum), reject password-protected PDFs, record byte size / structural page count / durable completed-or-failed marker, and return a typed `RawStageResult` with identifiers and file metadata but no content. No AI, OCR, parsing or extraction is reachable here. | No retry for deterministic source errors. |
 | `resolve-recorded-supplier-contract` | Resolve exact supplier contract ID/version recorded on the run. | No retry. |
 | `extract-source-evidence` | Extraction stage: reload the stored original through its durable `source_ref` (re-verified), then produce verbatim, source-located observations (no semantic parsing). File bytes never cross a task boundary. | Two retries only for transient provider/network failures. |
-| `capture-raw-observations` | Persist `RawObservationV1` records through the stage service. Terminology: these are extracted evidence observations (extraction-stage output), not the file-only raw stage — see `docs/technical-debt/rename-raw-observation-to-extracted-evidence.md`. | No retry; idempotency handles replay. |
-| `interpret-raw-evidence` | Propose typed fields from persisted evidence using the recorded contract. Non-catalogue lines (titles, headers) are skipped from Staging; provider outages degrade to unproposed fields routed to review. | Two retries only for transient provider failures. |
-| `build-staging-items` | Persist `StagingCatalogueItemV1` records linked to raw observations. | No retry; idempotency handles replay. |
-| `evaluate-staging-items` | Persist durable validation issues. | No retry; issue keys deduplicate. |
-| `prepare-pending-review-candidates` | Create pending-review mastering candidates for unblocked staging items. | No retry; blocking issues are expected business outcomes. |
+| `capture-extracted-evidence` | Persist `ExtractedEvidenceV1` records (extraction-stage output — distinct from the file-only raw stage) through the stage service. | No retry; idempotency handles replay. |
+| `interpret-raw-evidence` | Propose typed fields from persisted evidence using the recorded contract. Non-catalogue lines (titles, headers) are skipped from claim persistence; provider outages degrade to unproposed fields routed to review. | Two retries only for transient provider failures. |
+| `build-interpreted-claims` | Persist `InterpretedClaimV1` records linked to extracted evidence. | No retry; idempotency handles replay. |
+| `evaluate-interpreted-claims` | Persist durable validation issues. | No retry; issue keys deduplicate. |
+| `prepare-pending-review-candidates` | Create pending-review mastering candidates for unblocked interpreted claims. | No retry; blocking issues are expected business outcomes. |
 | `finalize-catalogue-run` | Write terminal success or warning state. | One DB retry. |
 | `record-catalogue-run-failure` | Write sanitized failure state in a fresh transaction. | One DB retry. |
 
@@ -93,10 +93,10 @@ sequenceDiagram
     Flow->>Extract: EXTRACTION STAGE - reload original via durable source_ref
     Flow->>Extract: extract verbatim source evidence
     Extract-->>Flow: typed, source-located observations
-    Flow->>Stage: capture raw observations
+    Flow->>Stage: capture extracted evidence
     Flow->>Extract: interpret persisted evidence (contract-guided)
     Extract-->>Flow: staged-row proposals with per-field evidence
-    Flow->>Stage: build staging items
+    Flow->>Stage: build interpreted claims
     Flow->>Stage: evaluate validation issues
     Flow->>Stage: prepare pending-review candidates
     Flow->>DB: complete or complete_with_warnings
@@ -213,7 +213,7 @@ what the source contains and where: spreadsheet cells, CSV rows, PDF text lines
 provider metadata and optional Decimal confidence. `FAILED` results fail the
 run (retryable provider errors retry); `PARTIAL` results carry per-unit errors
 into run warnings with rejected-unit accounting. Every observation is persisted
-as a Raw Observation — including titles and column headers, which are evidence
+as an Extracted Evidence observation — including titles and column headers, which are evidence
 even when they are not items.
 
 **Interpretation** (`services.catalogue_interpretation`) runs after Raw
@@ -221,7 +221,7 @@ persistence and is the only place evidence becomes proposals:
 
 - cell-backed observations map deterministically through the contract's
   declared source columns; rows repeating the declared headers are recognized
-  as header rows and skipped from Staging;
+  as header rows and skipped from claim persistence;
 - text-backed observations are interpreted by the model provider against the
   contract's prompt section, keyed by observation, with verdicts: a fields
   object, or null for non-catalogue lines (titles, banners, footers);
@@ -241,8 +241,8 @@ The adapter converts source evidence into existing stage service commands:
 
 | Stage | Adapter behavior |
 |---|---|
-| Raw Observation | Preserves raw text/cells, source location, extraction method, model metadata and confidence. Deterministic idempotency key is run scoped by the stage service. |
-| Staging Item | Keeps printed source strings in `StagingRawFields` and typed interpretations in `ProposedCatalogueFields`. |
+| Extracted Evidence | Preserves raw text/cells, source location, extraction method, model metadata and confidence. Deterministic idempotency key is run scoped by the stage service. |
+| Interpreted Claim | Keeps printed source strings in `ClaimRawFields` and typed interpretations in `ProposedCatalogueFields`. |
 | Validation Issue | Calls `CatalogueValidationService.evaluate_staging`; durable issue rows are created or reused. |
 | Mastering Candidate | Calls `MasteringService.prepare_candidate` only for staging items with no open blocking issue. Candidates stay `PENDING_REVIEW`. |
 

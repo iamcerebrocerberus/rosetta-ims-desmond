@@ -79,8 +79,8 @@ def forbid_understanding(monkeypatch):
     monkeypatch.setattr(catalogue_interpretation, "_model_interpret_rows", _forbidden("model interpretation"))
     monkeypatch.setattr(extraction_service, "extract", _forbidden("legacy extraction"))
     monkeypatch.setattr(pypdf.PageObject, "extract_text", _forbidden("PDF text extraction"))
-    monkeypatch.setattr(stages.RawObservationService, "capture", _forbidden("raw observation persistence"))
-    monkeypatch.setattr(stages.StagingCatalogueService, "build_item", _forbidden("staging persistence"))
+    monkeypatch.setattr(stages.ExtractedEvidenceService, "capture", _forbidden("raw observation persistence"))
+    monkeypatch.setattr(stages.InterpretedClaimService, "build_item", _forbidden("staging persistence"))
     monkeypatch.setattr(stages.MasteringService, "prepare_candidate", _forbidden("mastering persistence"))
 
 
@@ -96,9 +96,9 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueStagingRawObservation,
-        models.CatalogueStagingItem,
-        models.CatalogueRawObservation,
+        models.CatalogueInterpretedClaimEvidence,
+        models.CatalogueInterpretedClaim,
+        models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
     ):
@@ -222,8 +222,8 @@ def test_raw_stage_preserves_original_and_persists_metadata(db, forbid_understan
     assert source.page_count == 1
     assert source.raw_stage_status == "completed"
     assert source.raw_stage_completed_at is not None
-    assert db.query(models.CatalogueRawObservation).count() == 0
-    assert db.query(models.CatalogueStagingItem).count() == 0
+    assert db.query(models.CatalogueExtractedEvidence).count() == 0
+    assert db.query(models.CatalogueInterpretedClaim).count() == 0
 
 
 def test_raw_stage_is_idempotent(db, forbid_understanding):
@@ -317,8 +317,8 @@ def test_flow_never_reaches_extraction_when_raw_stage_fails(db, monkeypatch):
     assert run.status == "failed"
     assert "checksum" in run.error_summary
     assert _source_row(db, submitted.ingestion_run_id).raw_stage_status == "failed"
-    assert db.query(models.CatalogueRawObservation).count() == 0
-    assert db.query(models.CatalogueStagingItem).count() == 0
+    assert db.query(models.CatalogueExtractedEvidence).count() == 0
+    assert db.query(models.CatalogueInterpretedClaim).count() == 0
 
 
 def test_extraction_consumes_durable_reference_after_raw_completes(db):

@@ -22,9 +22,9 @@ from .catalogue_run_lifecycle import claim_queued_run, complete_run, fail_run, t
 from .catalogue_source_loader import load_and_verify_source_asset
 from .catalogue_stage_adapter import (
     evidence_from_persisted_observation,
-    mastering_command_for_staging,
+    mastering_command_for_claim,
     raw_input_from_extracted_evidence,
-    staging_command_from_interpretation,
+    claim_command_from_interpretation,
 )
 from .catalogue_types import (
     CatalogueFlowResult,
@@ -104,15 +104,15 @@ def extract_source_evidence_task(ingestion_run_id: str) -> EvidenceOutcome:
     return extract_source_evidence(asset)
 
 
-@task(name="capture-raw-observations", retries=0)
-def capture_raw_observations_task(
+@task(name="capture-extracted-evidence", retries=0)
+def capture_extracted_evidence_task(
     identity: RunIdentity,
     observations: tuple,
 ) -> tuple[tuple[UUID, ...], int, int]:
     db = database.SessionLocal()
     try:
-        result = stages.RawObservationService(db).capture(
-            stages.CaptureRawObservationsCommand(
+        result = stages.ExtractedEvidenceService(db).capture(
+            stages.CaptureExtractedEvidenceCommand(
                 ingestion_run_id=identity.run_uuid,
                 supplier_catalogue_id=identity.supplier_catalogue_id,
                 source_file_id=identity.source_file_id,
@@ -155,13 +155,13 @@ def interpret_raw_evidence_task(
         observations = []
         for raw_id in raw_observation_ids:
             row = (
-                db.query(models.CatalogueRawObservation)
+                db.query(models.CatalogueExtractedEvidence)
                 .filter_by(raw_observation_uuid=str(raw_id))
                 .first()
             )
             if row is None:
                 raise stages.UpstreamRecordNotFound(f"Persisted evidence observation {raw_id} was not found")
-            observations.append(evidence_from_persisted_observation(persistence.raw_observation_to_contract(row)))
+            observations.append(evidence_from_persisted_observation(persistence.extracted_evidence_to_contract(row)))
     finally:
         db.close()
     try:
@@ -170,8 +170,8 @@ def interpret_raw_evidence_task(
         raise TransientProviderError(str(exc)) from exc
 
 
-@task(name="build-staging-items", retries=0)
-def build_staging_items_task(
+@task(name="build-interpreted-claims", retries=0)
+def build_interpreted_claims_task(
     interpretation: InterpretationOutcome,
 ) -> tuple[tuple[UUID, ...], int, int]:
     """Persist interpreted claims (step 6) as one ATOMIC batch.
@@ -182,11 +182,11 @@ def build_staging_items_task(
 
     db = database.SessionLocal()
     try:
-        service = stages.StagingCatalogueService(db, commit=False)
+        service = stages.InterpretedClaimService(db, commit=False)
         output_ids: list[UUID] = []
         created = reused = 0
         for item in interpretation.items:
-            result = service.build_item(staging_command_from_interpretation(item))
+            result = service.build_item(claim_command_from_interpretation(item))
             output_ids.extend(UUID(str(output_id)) for output_id in result.output_ids)
             created += result.metrics.created_count
             reused += result.metrics.reused_count
@@ -199,14 +199,14 @@ def build_staging_items_task(
         db.close()
 
 
-@task(name="evaluate-staging-items", retries=0)
-def evaluate_staging_items_task(staging_ids: tuple[UUID, ...]) -> tuple[int, int, int]:
+@task(name="evaluate-interpreted-claims", retries=0)
+def evaluate_interpreted_claims_task(staging_ids: tuple[UUID, ...]) -> tuple[int, int, int]:
     db = database.SessionLocal()
     try:
         service = stages.CatalogueValidationService(db)
         created = reused = blocking = 0
         for staging_id in staging_ids:
-            result = service.evaluate_staging(stages.EvaluateStagingCommand(catalogue_item_id=staging_id))
+            result = service.evaluate_claim(stages.EvaluateInterpretedClaimCommand(catalogue_item_id=staging_id))
             created += result.metrics.created_count
             reused += result.metrics.reused_count
             blocking += result.metrics.blocking_issue_count
@@ -229,7 +229,7 @@ def prepare_eligible_candidates_task(
         for staging_id, item in zip(staging_ids, interpretation.items, strict=True):
             try:
                 result = service.prepare_candidate(
-                    mastering_command_for_staging(
+                    mastering_command_for_claim(
                         run_identity=identity,
                         catalogue_item_id=staging_id,
                         item=item,
@@ -238,7 +238,7 @@ def prepare_eligible_candidates_task(
                 created += result.metrics.created_count
                 reused += result.metrics.reused_count
             except stages.BlockingValidationIssues:
-                warnings.append(f"staging item {staging_id} has open blocking validation issues")
+                warnings.append(f"interpreted claim {staging_id} has open blocking validation issues")
         return created, reused, tuple(warnings)
     finally:
         db.close()
@@ -306,10 +306,10 @@ __all__ = [
     "raw_stage_task",
     "resolve_recorded_contract_task",
     "extract_source_evidence_task",
-    "capture_raw_observations_task",
+    "capture_extracted_evidence_task",
     "interpret_raw_evidence_task",
-    "build_staging_items_task",
-    "evaluate_staging_items_task",
+    "build_interpreted_claims_task",
+    "evaluate_interpreted_claims_task",
     "prepare_eligible_candidates_task",
     "finalize_run_task",
     "record_run_failure_task",

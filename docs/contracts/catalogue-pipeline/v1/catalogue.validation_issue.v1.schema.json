@@ -49,7 +49,7 @@
         }
       ],
       "default": null,
-      "description": "Related Staging Catalogue Item when applicable.",
+      "description": "Related interpreted claim when applicable.",
       "title": "Catalogue Item Id"
     },
     "contract_version": {
@@ -119,7 +119,7 @@
         }
       ],
       "default": null,
-      "description": "Related Raw Observation when applicable.",
+      "description": "Related extracted evidence observation when applicable.",
       "title": "Raw Observation Id"
     },
     "raw_value": {

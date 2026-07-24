@@ -162,7 +162,7 @@
           "title": "Note"
         },
         "raw_observation_id": {
-          "description": "Raw Observation that supports this field.",
+          "description": "extracted evidence observation that supports this field.",
           "format": "uuid",
           "title": "Raw Observation Id",
           "type": "string"
@@ -243,7 +243,7 @@
       "description": "Trace from mastered or served values back to staging and raw evidence.",
       "properties": {
         "catalogue_item_id": {
-          "description": "Staging Catalogue Item identity.",
+          "description": "interpreted claim identity.",
           "format": "uuid",
           "title": "Catalogue Item Id",
           "type": "string"
@@ -762,7 +762,7 @@
       "description": "Lineage needed to trace a serving publication.",
       "properties": {
         "catalogue_item_id": {
-          "description": "Staging Catalogue Item identity.",
+          "description": "interpreted claim identity.",
           "format": "uuid",
           "title": "Catalogue Item Id",
           "type": "string"

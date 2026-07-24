@@ -1,4 +1,4 @@
-"""Raw Observation Contract v1."""
+"""extracted evidence observation Contract v1."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .common import ExtractionProfileReference, JsonObject
 from .enums import ExtractionMethod
 
 
-CONTRACT_ID = "catalogue.raw_observation.v1"
+CONTRACT_ID = "catalogue.extracted_evidence.v1"
 
 
 class BoundingBox(ContractModel):
@@ -85,16 +85,16 @@ class RawCell(ContractModel):
     raw_value: Any = Field(..., description="Raw cell value as extracted from the source.")
 
 
-class RawObservationV1(ContractModel):
+class ExtractedEvidenceV1(ContractModel):
     """What the extraction system observed in the source catalogue, and where."""
 
     contract_id = CONTRACT_ID
 
-    contract_version: Literal["catalogue.raw_observation.v1"] = Field(
+    contract_version: Literal["catalogue.extracted_evidence.v1"] = Field(
         ...,
-        description="Exact CIS-103 Raw Observation contract identifier.",
+        description="Exact CIS-103 extracted evidence observation contract identifier.",
     )
-    raw_observation_id: UUID = Field(..., description="Raw Observation pipeline identity.")
+    raw_observation_id: UUID = Field(..., description="extracted evidence observation pipeline identity.")
     ingestion_run_id: UUID = Field(..., description="Pipeline run identity.")
     supplier_catalogue_id: UUID = Field(..., description="Supplier catalogue identity.")
     source_file_id: UUID = Field(..., description="Raw source file identity.")
@@ -126,8 +126,8 @@ class RawObservationV1(ContractModel):
         has_text = bool(self.raw_text and self.raw_text.strip())
         has_cells = any(cell.raw_value is not None and str(cell.raw_value).strip() for cell in self.raw_cells)
         if not has_text and not has_cells:
-            raise ValueError("Raw Observation requires raw_text or at least one raw cell with evidence")
+            raise ValueError("extracted evidence observation requires raw_text or at least one raw cell with evidence")
         return self
 
 
-register_contract(RawObservationV1)
+register_contract(ExtractedEvidenceV1)

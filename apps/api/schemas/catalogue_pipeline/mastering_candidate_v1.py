@@ -102,9 +102,9 @@ class MasteringCandidateV1(ContractModel):
     )
     mastering_candidate_id: UUID = Field(..., description="Mastering Candidate identity.")
     trace: PipelineTrace = Field(..., description="Common catalogue pipeline trace metadata.")
-    catalogue_item_id: UUID = Field(..., description="Staging Catalogue Item identity.")
+    catalogue_item_id: UUID = Field(..., description="interpreted claim identity.")
     raw_observation_ids: list[UUID] = Field(..., min_length=1, description="Raw observations supporting this candidate.")
-    lineage: LineageReference = Field(..., description="Top-level lineage back to staging and raw observations.")
+    lineage: LineageReference = Field(..., description="Top-level lineage back to staging and extracted evidence observations.")
     supplier_product_resolution: SupplierProductResolution = Field(..., description="Supplier Product resolution.")
     product_variant_resolution: ProductVariantResolution = Field(..., description="Product Variant resolution.")
     packaging_resolution: PackagingConfigurationResolution = Field(..., description="Packaging resolution.")
@@ -128,7 +128,7 @@ class MasteringCandidateV1(ContractModel):
             raise ValueError("Mastering Candidate raw_observation_ids must be unique")
         if self.review_status in {ReviewStatus.APPROVED, ReviewStatus.APPROVED_WITH_OVERRIDE}:
             if self.lineage is None or not self.raw_observation_ids:
-                raise ValueError("approved Mastering Candidate requires lineage and raw observation evidence")
+                raise ValueError("approved Mastering Candidate requires lineage and extracted evidence")
             if not (self.reviewed_by and self.reviewed_at):
                 raise ValueError("approved Mastering Candidate requires reviewed_by and reviewed_at")
         if self.review_status == ReviewStatus.APPROVED_WITH_OVERRIDE:

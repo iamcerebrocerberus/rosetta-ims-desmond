@@ -21,9 +21,9 @@ from sqlalchemy.orm import Session
 import models
 from schemas.catalogue_pipeline import (
     MasteringCandidateV1,
-    RawObservationV1,
+    ExtractedEvidenceV1,
     ServingItemV1,
-    StagingCatalogueItemV1,
+    InterpretedClaimV1,
     ValidationIssueV1,
 )
 from schemas.catalogue_pipeline.common import (
@@ -55,9 +55,9 @@ from schemas.catalogue_pipeline.mastering_candidate_v1 import (
     SupplierPriceResolution,
     SupplierProductResolution,
 )
-from schemas.catalogue_pipeline.raw_observation_v1 import RawCell, SourceLocation
+from schemas.catalogue_pipeline.extracted_evidence_v1 import RawCell, SourceLocation
 from schemas.catalogue_pipeline.serving_item_v1 import PublicationLineage, SupplierOffering
-from schemas.catalogue_pipeline.staging_item_v1 import ProposedCatalogueFields, StagingRawFields
+from schemas.catalogue_pipeline.interpreted_claim_v1 import ProposedCatalogueFields, ClaimRawFields
 from services import catalogue_pipeline_persistence as persistence
 from services import supplier_source_contract_runtime
 
@@ -138,7 +138,7 @@ class StageResult:
 
 
 @dataclass(frozen=True)
-class RawObservationInput:
+class ExtractedEvidenceInput:
     """One supplier-extraction row/cell/text evidence payload."""
 
     idempotency_key: str
@@ -154,24 +154,24 @@ class RawObservationInput:
 
 
 @dataclass(frozen=True)
-class CaptureRawObservationsCommand:
-    """Capture Raw Observation contracts for one ingestion run."""
+class CaptureExtractedEvidenceCommand:
+    """Capture extracted evidence observation contracts for one ingestion run."""
 
     ingestion_run_id: UUID
     supplier_catalogue_id: UUID
     source_file_id: UUID
     supplier_id: int
-    observations: tuple[RawObservationInput, ...]
+    observations: tuple[ExtractedEvidenceInput, ...]
     contract_id: str | None = None
     contract_version: str | None = None
 
 
 @dataclass(frozen=True)
-class BuildStagingItemCommand:
-    """Build one Staging Catalogue Item from persisted raw observations."""
+class BuildInterpretedClaimCommand:
+    """Build one interpreted claim from persisted extracted evidence observations."""
 
     raw_observation_ids: tuple[UUID, ...]
-    raw_fields: StagingRawFields | dict[str, Any]
+    raw_fields: ClaimRawFields | dict[str, Any]
     proposed_fields: ProposedCatalogueFields | dict[str, Any]
     idempotency_key: str
     review_requirement: ReviewRequirement | None = None
@@ -181,7 +181,7 @@ class BuildStagingItemCommand:
 
 
 @dataclass(frozen=True)
-class EvaluateStagingCommand:
+class EvaluateInterpretedClaimCommand:
     """Evaluate domain validation rules for one staged item."""
 
     catalogue_item_id: UUID
@@ -202,7 +202,7 @@ class ResolveValidationIssueCommand:
 
 @dataclass(frozen=True)
 class PrepareMasteringCandidateCommand:
-    """Prepare one reviewable Mastering Candidate from a staging item."""
+    """Prepare one reviewable Mastering Candidate from a interpreted claim."""
 
     catalogue_item_id: UUID
     idempotency_key: str
@@ -269,10 +269,10 @@ class _TransactionalService:
             raise ConcurrentModification(str(exc.orig)) from exc
 
 
-class RawObservationService(_TransactionalService):
+class ExtractedEvidenceService(_TransactionalService):
     """Capture immutable raw evidence from supported supplier extraction output."""
 
-    def capture(self, command: CaptureRawObservationsCommand) -> StageResult:
+    def capture(self, command: CaptureExtractedEvidenceCommand) -> StageResult:
         if not command.observations:
             return StageResult(stage="raw_capture", metrics=StageMetrics(input_count=0))
 
@@ -286,16 +286,16 @@ class RawObservationService(_TransactionalService):
         output_ids: list[UUID] = []
         for item in command.observations:
             contract = self._contract_for_input(command, item, trace_profile)
-            existing = persistence._raw_observation(self.db, contract.raw_observation_id)  # noqa: SLF001
+            existing = persistence._extracted_evidence(self.db, contract.raw_observation_id)  # noqa: SLF001
             if existing is not None:
                 _assert_same_material(
-                    _raw_material(persistence.raw_observation_to_contract(existing)),
+                    _raw_material(persistence.extracted_evidence_to_contract(existing)),
                     _raw_material(contract),
-                    f"Raw Observation {contract.raw_observation_id}",
+                    f"extracted evidence observation {contract.raw_observation_id}",
                 )
                 reused += 1
             else:
-                persistence.persist_raw_observation(self.db, contract)
+                persistence.persist_extracted_evidence(self.db, contract)
                 created += 1
             output_ids.append(contract.raw_observation_id)
 
@@ -312,10 +312,10 @@ class RawObservationService(_TransactionalService):
 
     def _contract_for_input(
         self,
-        command: CaptureRawObservationsCommand,
-        item: RawObservationInput,
+        command: CaptureExtractedEvidenceCommand,
+        item: ExtractedEvidenceInput,
         extraction_profile: ExtractionProfileReference,
-    ) -> RawObservationV1:
+    ) -> ExtractedEvidenceV1:
         source_location = SourceLocation.model_validate(item.source_location)
         raw_cells = [RawCell.model_validate(cell) for cell in item.raw_cells]
         material = {
@@ -325,9 +325,9 @@ class RawObservationService(_TransactionalService):
             "idempotency_key": item.idempotency_key,
         }
         observation_id = _stable_uuid("raw-observation", material)
-        return RawObservationV1.model_validate(
+        return ExtractedEvidenceV1.model_validate(
             {
-                "contract_version": "catalogue.raw_observation.v1",
+                "contract_version": "catalogue.extracted_evidence.v1",
                 "raw_observation_id": str(observation_id),
                 "ingestion_run_id": str(command.ingestion_run_id),
                 "supplier_catalogue_id": str(command.supplier_catalogue_id),
@@ -349,10 +349,10 @@ class RawObservationService(_TransactionalService):
 class CatalogueValidationService(_TransactionalService):
     """Persist durable validation issues for cross-record and domain rules."""
 
-    def evaluate_staging(self, command: EvaluateStagingCommand) -> StageResult:
-        staging_row = _staging_row(self.db, command.catalogue_item_id)
-        staging = persistence.staging_item_to_contract(staging_row)
-        issue_specs = _staging_issue_specs(staging)
+    def evaluate_claim(self, command: EvaluateInterpretedClaimCommand) -> StageResult:
+        staging_row = _interpreted_claim_row(self.db, command.catalogue_item_id)
+        staging = persistence.interpreted_claim_to_contract(staging_row)
+        issue_specs = _claim_issue_specs(staging)
 
         created = reused = warning_count = blocking_count = 0
         issue_ids: list[UUID] = []
@@ -452,7 +452,7 @@ class CatalogueValidationService(_TransactionalService):
             metrics=StageMetrics(input_count=1, created_count=1),
         )
 
-    def _issue_for_spec(self, staging: StagingCatalogueItemV1, spec: dict[str, Any], created_at: datetime) -> ValidationIssueV1:
+    def _issue_for_spec(self, staging: InterpretedClaimV1, spec: dict[str, Any], created_at: datetime) -> ValidationIssueV1:
         issue_id = _stable_uuid(
             "validation-issue",
             {
@@ -487,7 +487,7 @@ class CatalogueValidationService(_TransactionalService):
         )
 
 
-class StagingCatalogueService(_TransactionalService):
+class InterpretedClaimService(_TransactionalService):
     """Persist interpreted claims (timeline step 6, INTERMEDIATE layer).
 
     Terminology: despite the historical "staging" name, these records are the
@@ -496,13 +496,13 @@ class StagingCatalogueService(_TransactionalService):
     records are the extracted evidence observations (step 4).
     """
 
-    def build_item(self, command: BuildStagingItemCommand) -> StageResult:
+    def build_item(self, command: BuildInterpretedClaimCommand) -> StageResult:
         if not command.raw_observation_ids:
-            raise MissingOrIncompatibleLineage("Staging requires at least one Raw Observation")
+            raise MissingOrIncompatibleLineage("An interpreted claim requires at least one extracted evidence observation")
         if len(command.raw_observation_ids) != len(set(command.raw_observation_ids)):
-            raise MissingOrIncompatibleLineage("Staging raw observation lineage cannot contain duplicates")
+            raise MissingOrIncompatibleLineage("Interpreted-claim evidence lineage cannot contain duplicates")
 
-        observations = [_raw_observation_row(self.db, raw_id) for raw_id in command.raw_observation_ids]
+        observations = [_extracted_evidence_row(self.db, raw_id) for raw_id in command.raw_observation_ids]
         _assert_same_raw_context(observations)
         first = observations[0]
         trace = PipelineTrace(
@@ -514,7 +514,7 @@ class StagingCatalogueService(_TransactionalService):
                 profile_version=first.extraction_profile_version,
             ),
         )
-        raw_fields = StagingRawFields.model_validate(command.raw_fields)
+        raw_fields = ClaimRawFields.model_validate(command.raw_fields)
         proposed_fields = ProposedCatalogueFields.model_validate(command.proposed_fields)
         review_requirement = command.review_requirement or _review_requirement(raw_fields, proposed_fields, command.validation_issue_ids)
         catalogue_item_id = _stable_uuid(
@@ -524,9 +524,9 @@ class StagingCatalogueService(_TransactionalService):
                 "idempotency_key": command.idempotency_key,
             },
         )
-        contract = StagingCatalogueItemV1.model_validate(
+        contract = InterpretedClaimV1.model_validate(
             {
-                "contract_version": "catalogue.staging_item.v1",
+                "contract_version": "catalogue.interpreted_claim.v1",
                 "trace": trace.model_dump(mode="json"),
                 "catalogue_item_id": str(catalogue_item_id),
                 "raw_observation_ids": [str(item) for item in command.raw_observation_ids],
@@ -539,17 +539,17 @@ class StagingCatalogueService(_TransactionalService):
             }
         )
 
-        existing = persistence._staging_item(self.db, catalogue_item_id)  # noqa: SLF001
+        existing = persistence._interpreted_claim(self.db, catalogue_item_id)  # noqa: SLF001
         if existing is not None:
             _assert_same_material(
-                _staging_material(persistence.staging_item_to_contract(existing)),
-                _staging_material(contract),
-                f"Staging Catalogue Item {catalogue_item_id}",
+                _claim_material(persistence.interpreted_claim_to_contract(existing)),
+                _claim_material(contract),
+                f"interpreted claim {catalogue_item_id}",
             )
             reused = 1
             created = 0
         else:
-            persistence.persist_staging_item(self.db, contract)
+            persistence.persist_interpreted_claim(self.db, contract)
             reused = 0
             created = 1
         self._finish()
@@ -561,12 +561,12 @@ class StagingCatalogueService(_TransactionalService):
 
 
 class MasteringService(_TransactionalService):
-    """Prepare reviewable mastering candidates from eligible staging items."""
+    """Prepare reviewable mastering candidates from eligible interpreted claims."""
 
     def prepare_candidate(self, command: PrepareMasteringCandidateCommand) -> StageResult:
-        staging_row = _staging_row(self.db, command.catalogue_item_id)
+        staging_row = _interpreted_claim_row(self.db, command.catalogue_item_id)
         _raise_if_open_blocking(self.db, catalogue_item_uuid=str(command.catalogue_item_id))
-        staging = persistence.staging_item_to_contract(staging_row)
+        staging = persistence.interpreted_claim_to_contract(staging_row)
         candidate_id = _stable_uuid(
             "mastering-candidate",
             {
@@ -708,7 +708,7 @@ class ReviewDecisionService(_TransactionalService):
         candidate.override_reason = command.override_reason
         candidate.review_decision_uuid = str(decision_id)
         if command.review_status in {ReviewStatus.REJECTED, ReviewStatus.NEEDS_CLARIFICATION}:
-            staging = _staging_row(self.db, UUID(candidate.catalogue_item_uuid))
+            staging = _interpreted_claim_row(self.db, UUID(candidate.catalogue_item_uuid))
             staging.stage_status = "NEEDS_REVIEW"
         self._finish()
         return StageResult(
@@ -1019,7 +1019,7 @@ class ServingPublicationService(_TransactionalService):
 
 def _resolve_run_source_contract(
     db: Session,
-    command: CaptureRawObservationsCommand,
+    command: CaptureExtractedEvidenceCommand,
 ) -> tuple[models.IngestionRun, models.CatalogueSourceDocument, supplier_source_contract_runtime.SupplierSourceRuntimeContract]:
     run = db.query(models.IngestionRun).filter_by(run_uuid=str(command.ingestion_run_id)).first()
     if run is None:
@@ -1068,7 +1068,7 @@ def _assert_recorded_contract(label: str, contract_id: str | None, version: str 
         raise SupplierContractMismatch(f"{label} contract_version={version} does not match resolved {runtime_contract.version}")
 
 
-def _staging_issue_specs(staging: StagingCatalogueItemV1) -> list[dict[str, Any]]:
+def _claim_issue_specs(staging: InterpretedClaimV1) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
     if staging.raw_fields.cost and staging.proposed_fields.cost is None:
         specs.append(
@@ -1117,7 +1117,7 @@ def _staging_issue_specs(staging: StagingCatalogueItemV1) -> list[dict[str, Any]
 
 
 def _review_requirement(
-    raw_fields: StagingRawFields,
+    raw_fields: ClaimRawFields,
     proposed_fields: ProposedCatalogueFields,
     validation_issue_ids: tuple[UUID, ...],
 ) -> ReviewRequirement:
@@ -1130,7 +1130,7 @@ def _review_requirement(
     return ReviewRequirement.NOT_REQUIRED
 
 
-def _default_supplier_product_resolution(staging: StagingCatalogueItemV1) -> dict[str, Any]:
+def _default_supplier_product_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
     source = _source_document_for_trace(staging)
     supplier_id = source.supplier_id if source else None
     supplier_sku = _proposal_text(staging.proposed_fields.supplier_sku) or staging.raw_fields.supplier_sku
@@ -1143,7 +1143,7 @@ def _default_supplier_product_resolution(staging: StagingCatalogueItemV1) -> dic
     }
 
 
-def _default_product_variant_resolution(staging: StagingCatalogueItemV1) -> dict[str, Any]:
+def _default_product_variant_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
     proposed_name = _proposal_text(staging.proposed_fields.product_name) or staging.raw_fields.product_name
     supplier_sku = _proposal_text(staging.proposed_fields.supplier_sku) or staging.raw_fields.supplier_sku
     return {
@@ -1156,7 +1156,7 @@ def _default_product_variant_resolution(staging: StagingCatalogueItemV1) -> dict
     }
 
 
-def _default_packaging_resolution(staging: StagingCatalogueItemV1) -> dict[str, Any]:
+def _default_packaging_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
     packaging = staging.proposed_fields.packaging
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if packaging else ResolutionState.UNRESOLVED.value,
@@ -1164,7 +1164,7 @@ def _default_packaging_resolution(staging: StagingCatalogueItemV1) -> dict[str, 
     }
 
 
-def _default_supplier_price_resolution(staging: StagingCatalogueItemV1) -> dict[str, Any]:
+def _default_supplier_price_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
     cost = staging.proposed_fields.cost
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if cost else ResolutionState.UNRESOLVED.value,
@@ -1172,7 +1172,7 @@ def _default_supplier_price_resolution(staging: StagingCatalogueItemV1) -> dict[
     }
 
 
-def _default_mbb_resolution(staging: StagingCatalogueItemV1) -> dict[str, Any]:
+def _default_mbb_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
     terms = staging.proposed_fields.mbb_terms
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if terms else ResolutionState.UNRESOLVED.value,
@@ -1200,7 +1200,7 @@ def _proposal_text(value) -> str | None:
     return value.value if value is not None else None
 
 
-def _source_document_for_trace(staging: StagingCatalogueItemV1):
+def _source_document_for_trace(staging: InterpretedClaimV1):
     # Filled by tests/services that already have the same module-level database
     # session would be leaky, so this function intentionally returns None. The
     # supplier_id is supplied by explicit mastering commands when needed.
@@ -1376,17 +1376,17 @@ def _mbb_row(term: MbbTerm, candidate: MasteringCandidateV1, supplier_product_id
     return models.CatalogueSupplierMbbTerm(**kwargs)
 
 
-def _raw_observation_row(db: Session, raw_id: UUID) -> models.CatalogueRawObservation:
-    row = persistence._raw_observation(db, raw_id)  # noqa: SLF001
+def _extracted_evidence_row(db: Session, raw_id: UUID) -> models.CatalogueExtractedEvidence:
+    row = persistence._extracted_evidence(db, raw_id)  # noqa: SLF001
     if row is None:
-        raise UpstreamRecordNotFound(f"Raw Observation {raw_id} does not exist")
+        raise UpstreamRecordNotFound(f"extracted evidence observation {raw_id} does not exist")
     return row
 
 
-def _staging_row(db: Session, catalogue_item_id: UUID) -> models.CatalogueStagingItem:
-    row = persistence._staging_item(db, catalogue_item_id)  # noqa: SLF001
+def _interpreted_claim_row(db: Session, catalogue_item_id: UUID) -> models.CatalogueInterpretedClaim:
+    row = persistence._interpreted_claim(db, catalogue_item_id)  # noqa: SLF001
     if row is None:
-        raise UpstreamRecordNotFound(f"Staging Catalogue Item {catalogue_item_id} does not exist")
+        raise UpstreamRecordNotFound(f"interpreted claim {catalogue_item_id} does not exist")
     return row
 
 
@@ -1404,20 +1404,20 @@ def _candidate_row(db: Session, candidate_id: UUID) -> models.CatalogueMastering
     return row
 
 
-def _assert_same_raw_context(observations: list[models.CatalogueRawObservation]) -> None:
+def _assert_same_raw_context(observations: list[models.CatalogueExtractedEvidence]) -> None:
     first = observations[0]
     for row in observations:
         if row.ingestion_run_uuid != first.ingestion_run_uuid:
-            raise MissingOrIncompatibleLineage("Staging cannot group Raw Observations from different ingestion runs")
+            raise MissingOrIncompatibleLineage("Staging cannot group extracted evidence observations from different ingestion runs")
         if row.supplier_catalogue_uuid != first.supplier_catalogue_uuid:
-            raise MissingOrIncompatibleLineage("Staging cannot group Raw Observations from different source documents")
+            raise MissingOrIncompatibleLineage("Staging cannot group extracted evidence observations from different source documents")
         if row.source_file_uuid != first.source_file_uuid:
-            raise MissingOrIncompatibleLineage("Staging cannot group Raw Observations from different source files")
+            raise MissingOrIncompatibleLineage("Staging cannot group extracted evidence observations from different source files")
         if (row.extraction_profile_id, row.extraction_profile_version) != (
             first.extraction_profile_id,
             first.extraction_profile_version,
         ):
-            raise SupplierContractMismatch("Staging cannot group Raw Observations from different supplier-source contracts")
+            raise SupplierContractMismatch("Staging cannot group extracted evidence observations from different supplier-source contracts")
 
 
 def _raise_if_open_blocking(db: Session, *, catalogue_item_uuid: str) -> None:
@@ -1491,7 +1491,7 @@ _VOLATILE_ATTEMPT_METADATA_KEYS = (
 )
 
 
-def _raw_material(contract: RawObservationV1) -> dict[str, Any]:
+def _raw_material(contract: ExtractedEvidenceV1) -> dict[str, Any]:
     """Material equality for extracted-evidence replay.
 
     Excluded from equality (replay-safe): ``captured_at``, the volatile
@@ -1513,7 +1513,7 @@ def _raw_material(contract: RawObservationV1) -> dict[str, Any]:
     return payload
 
 
-def _staging_material(contract: StagingCatalogueItemV1) -> dict[str, Any]:
+def _claim_material(contract: InterpretedClaimV1) -> dict[str, Any]:
     """Material equality for interpreted-claim (step 6) replay.
 
     Mirrors the step-4 policy: per-attempt volatile values — ``created_at``

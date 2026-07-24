@@ -20,9 +20,9 @@ import database  # noqa: E402
 import models  # noqa: E402
 from schemas.catalogue_pipeline import (  # noqa: E402
     MasteringCandidateV1,
-    RawObservationV1,
+    ExtractedEvidenceV1,
     ServingItemV1,
-    StagingCatalogueItemV1,
+    InterpretedClaimV1,
     ValidationIssueV1,
 )
 from services import catalogue_pipeline_persistence as persistence  # noqa: E402
@@ -69,9 +69,9 @@ def _reset(session) -> None:
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueStagingRawObservation,
-        models.CatalogueStagingItem,
-        models.CatalogueRawObservation,
+        models.CatalogueInterpretedClaimEvidence,
+        models.CatalogueInterpretedClaim,
+        models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
     ):
@@ -163,14 +163,14 @@ def _seed_context(session) -> None:
 
 def _persist_happy_path(session):
     _seed_context(session)
-    raw = RawObservationV1.model_validate(_load("raw_observation_pdf.json"))
-    staging = StagingCatalogueItemV1.model_validate(_load("staging_item_with_mbb.json"))
+    raw = ExtractedEvidenceV1.model_validate(_load("raw_observation_pdf.json"))
+    staging = InterpretedClaimV1.model_validate(_load("staging_item_with_mbb.json"))
     issue = ValidationIssueV1.model_validate(_load("validation_issue_ambiguous_cost_basis.json"))
     candidate = MasteringCandidateV1.model_validate(_load("mastering_candidate_no_family.json"))
     serving = ServingItemV1.model_validate(_load("serving_item_inventory.json"))
 
-    raw_row = persistence.persist_raw_observation(session, raw)
-    staging_row = persistence.persist_staging_item(session, staging)
+    raw_row = persistence.persist_extracted_evidence(session, raw)
+    staging_row = persistence.persist_interpreted_claim(session, staging)
     issue_row = persistence.persist_validation_issue(session, issue)
     candidate_row = persistence.persist_mastering_candidate(session, candidate)
     serving_row = persistence.persist_serving_item(session, serving)
@@ -184,8 +184,8 @@ def test_fresh_schema_contains_logical_persistence_tables_and_indexes():
 
     assert {
         "catalogue_source_documents",
-        "catalogue_raw_observations",
-        "catalogue_staging_items",
+        "catalogue_extracted_evidence",
+        "catalogue_interpreted_claims",
         "catalogue_validation_issues",
         "catalogue_mastering_candidates",
         "catalogue_review_decisions",
@@ -219,7 +219,7 @@ def test_sqlite_foreign_key_enforcement_for_pipeline_models(tmp_path):
             conn.execute(
                 text(
                     """
-                    INSERT INTO catalogue_raw_observations (
+                    INSERT INTO catalogue_extracted_evidence (
                         raw_observation_uuid,
                         contract_version,
                         ingestion_run_uuid,
@@ -236,7 +236,7 @@ def test_sqlite_foreign_key_enforcement_for_pipeline_models(tmp_path):
                     )
                     VALUES (
                         '99999999-9999-4999-8999-999999999999',
-                        'catalogue.raw_observation.v1',
+                        'catalogue.extracted_evidence.v1',
                         '11111111-1111-4111-8111-111111111111',
                         '22222222-2222-4222-8222-222222222222',
                         '33333333-3333-4333-8333-333333333333',
@@ -289,7 +289,7 @@ def test_migration_backfills_existing_ingestion_run_uuid_and_is_idempotent(tmp_p
     database.run_migrations(engine)
 
     inspector = sa.inspect(engine)
-    assert "catalogue_raw_observations" in inspector.get_table_names()
+    assert "catalogue_extracted_evidence" in inspector.get_table_names()
     columns = {column["name"] for column in inspector.get_columns("catalogue_ingestion_runs")}
     assert {"run_uuid", "supplier_source_contract_id", "supplier_source_contract_version", "document_type"} <= columns
     with engine.connect() as conn:
@@ -359,8 +359,8 @@ def test_migration_audit_reports_legacy_rows_without_mutating(db):
 def test_pipeline_contracts_round_trip_through_persistence(db):
     raw, raw_row, staging, staging_row, issue, issue_row, candidate, candidate_row, serving, serving_row = _persist_happy_path(db)
 
-    assert _model_json(persistence.raw_observation_to_contract(raw_row)) == _model_json(raw)
-    assert _model_json(persistence.staging_item_to_contract(staging_row)) == _model_json(staging)
+    assert _model_json(persistence.extracted_evidence_to_contract(raw_row)) == _model_json(raw)
+    assert _model_json(persistence.interpreted_claim_to_contract(staging_row)) == _model_json(staging)
     assert _model_json(persistence.validation_issue_to_contract(issue_row)) == _model_json(issue)
     assert _model_json(persistence.mastering_candidate_to_contract(candidate_row)) == _model_json(candidate)
     assert _model_json(persistence.serving_item_to_contract(serving_row)) == _model_json(serving)
@@ -369,26 +369,26 @@ def test_pipeline_contracts_round_trip_through_persistence(db):
     assert db.query(models.CatalogueReviewDecision).filter_by(review_decision_uuid="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").count() == 1
 
 
-def test_cross_run_raw_observation_lineage_is_rejected(db):
+def test_cross_run_extracted_evidence_lineage_is_rejected(db):
     _seed_context(db)
-    raw = RawObservationV1.model_validate(_load("raw_observation_pdf.json"))
-    persistence.persist_raw_observation(db, raw)
+    raw = ExtractedEvidenceV1.model_validate(_load("raw_observation_pdf.json"))
+    persistence.persist_extracted_evidence(db, raw)
     db.commit()
 
     staging_payload = _load("staging_item_with_mbb.json")
     staging_payload["trace"]["ingestion_run_id"] = "11111111-1111-4111-8111-111111111112"
-    staging = StagingCatalogueItemV1.model_validate(staging_payload)
+    staging = InterpretedClaimV1.model_validate(staging_payload)
 
     with pytest.raises(persistence.CatalogueLineageError, match="cannot cross ingestion runs"):
-        persistence.persist_staging_item(db, staging)
+        persistence.persist_interpreted_claim(db, staging)
 
 
 def test_open_blocking_issue_prevents_mastering_approval_and_publication(db):
     _seed_context(db)
-    raw = RawObservationV1.model_validate(_load("raw_observation_pdf.json"))
-    staging = StagingCatalogueItemV1.model_validate(_load("staging_item_with_mbb.json"))
-    persistence.persist_raw_observation(db, raw)
-    persistence.persist_staging_item(db, staging)
+    raw = ExtractedEvidenceV1.model_validate(_load("raw_observation_pdf.json"))
+    staging = InterpretedClaimV1.model_validate(_load("staging_item_with_mbb.json"))
+    persistence.persist_extracted_evidence(db, raw)
+    persistence.persist_interpreted_claim(db, staging)
 
     issue_payload = _load("validation_issue_ambiguous_cost_basis.json")
     issue_payload["severity"] = "BLOCKING"

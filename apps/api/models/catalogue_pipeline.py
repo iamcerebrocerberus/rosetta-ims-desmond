@@ -108,7 +108,7 @@ class CatalogueRawStageAttempt(Base):
     created_at = Column(String, nullable=False)
 
 
-class CatalogueRawObservation(Base):
+class CatalogueExtractedEvidence(Base):
     """Extracted evidence observation: verbatim evidence + exact source location.
 
     Terminology: despite the historical name, this is the EXTRACTION stage's
@@ -119,26 +119,26 @@ class CatalogueRawObservation(Base):
     (docs/technical-debt/rename-raw-observation-to-extracted-evidence.md).
     """
 
-    __tablename__ = "catalogue_raw_observations"
+    __tablename__ = "catalogue_extracted_evidence"
     __table_args__ = (
-        UniqueConstraint("raw_observation_uuid", name="uq_raw_observations_uuid"),
-        CheckConstraint("page_number IS NULL OR page_number > 0", name="ck_raw_observation_page_positive"),
-        CheckConstraint("row_number IS NULL OR row_number > 0", name="ck_raw_observation_row_positive"),
-        CheckConstraint("extraction_confidence IS NULL OR (extraction_confidence >= 0 AND extraction_confidence <= 1)", name="ck_raw_observation_confidence"),
+        UniqueConstraint("raw_observation_uuid", name="uq_extracted_evidences_uuid"),
+        CheckConstraint("page_number IS NULL OR page_number > 0", name="ck_extracted_evidence_page_positive"),
+        CheckConstraint("row_number IS NULL OR row_number > 0", name="ck_extracted_evidence_row_positive"),
+        CheckConstraint("extraction_confidence IS NULL OR (extraction_confidence >= 0 AND extraction_confidence <= 1)", name="ck_extracted_evidence_confidence"),
         CheckConstraint(
             "(raw_text IS NOT NULL AND length(trim(raw_text)) > 0) OR "
             "(raw_cells_json IS NOT NULL AND raw_cells_json != '[]')",
-            name="ck_raw_observation_has_evidence",
+            name="ck_extracted_evidence_has_evidence",
         ),
         CheckConstraint(
             "page_number IS NOT NULL OR sheet_name IS NOT NULL OR row_number IS NOT NULL OR "
             "cell_range IS NOT NULL OR source_object_key IS NOT NULL OR "
             "(source_location_json IS NOT NULL AND source_location_json LIKE '%bounding_box%')",
-            name="ck_raw_observation_has_location",
+            name="ck_extracted_evidence_has_location",
         ),
-        Index("ix_raw_observations_run", "ingestion_run_uuid"),
-        Index("ix_raw_observations_source_document", "supplier_catalogue_uuid"),
-        Index("ix_raw_observations_location", "page_number", "sheet_name", "row_number"),
+        Index("ix_extracted_evidences_run", "ingestion_run_uuid"),
+        Index("ix_extracted_evidences_source_document", "supplier_catalogue_uuid"),
+        Index("ix_extracted_evidences_location", "page_number", "sheet_name", "row_number"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -171,7 +171,7 @@ class CatalogueRawObservation(Base):
     source_document = relationship("CatalogueSourceDocument", foreign_keys=[source_document_id], viewonly=True)
 
 
-class CatalogueStagingItem(Base):
+class CatalogueInterpretedClaim(Base):
     """Interpreted claim (timeline step 6, INTERMEDIATE layer).
 
     Historical name: these rows are NOT the Staging layer (extracted
@@ -179,13 +179,13 @@ class CatalogueStagingItem(Base):
     the evidence MEANS. Rename tracked in docs/technical-debt/
     rename-staging-item-to-interpreted-claim.md. Original docstring: Raw source-field snapshot plus typed proposed interpretation."""
 
-    __tablename__ = "catalogue_staging_items"
+    __tablename__ = "catalogue_interpreted_claims"
     __table_args__ = (
-        UniqueConstraint("catalogue_item_uuid", name="uq_staging_items_uuid"),
+        UniqueConstraint("catalogue_item_uuid", name="uq_interpreted_claims_uuid"),
         CheckConstraint("review_requirement IN ('NOT_REQUIRED','RECOMMENDED','REQUIRED','BLOCKING')", name="ck_staging_review_requirement"),
         CheckConstraint("stage_status IN ('PROPOSED','NEEDS_REVIEW','APPROVED','REJECTED','SUPERSEDED')", name="ck_staging_status"),
-        Index("ix_staging_items_run_status", "ingestion_run_uuid", "stage_status", "review_requirement"),
-        Index("ix_staging_items_catalogue", "supplier_catalogue_uuid"),
+        Index("ix_interpreted_claims_run_status", "ingestion_run_uuid", "stage_status", "review_requirement"),
+        Index("ix_interpreted_claims_catalogue", "supplier_catalogue_uuid"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -205,30 +205,30 @@ class CatalogueStagingItem(Base):
     metadata_json = Column(Text, nullable=True)
 
     raw_observation_links = relationship(
-        "CatalogueStagingRawObservation",
+        "CatalogueInterpretedClaimEvidence",
         back_populates="staging_item",
         cascade="all, delete-orphan",
-        order_by="CatalogueStagingRawObservation.sort_order",
+        order_by="CatalogueInterpretedClaimEvidence.sort_order",
     )
 
 
-class CatalogueStagingRawObservation(Base):
-    """Many-to-many lineage from staging items to raw observations."""
+class CatalogueInterpretedClaimEvidence(Base):
+    """Many-to-many lineage from interpreted claims to extracted evidence observations."""
 
-    __tablename__ = "catalogue_staging_raw_observations"
+    __tablename__ = "catalogue_interpreted_claim_evidence"
     __table_args__ = (
-        UniqueConstraint("staging_item_id", "raw_observation_id", name="uq_staging_raw_observation_link"),
-        Index("ix_staging_raw_observation_raw_uuid", "raw_observation_uuid"),
+        UniqueConstraint("staging_item_id", "raw_observation_id", name="uq_staging_extracted_evidence_link"),
+        Index("ix_staging_extracted_evidence_raw_uuid", "raw_observation_uuid"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    staging_item_id = Column(Integer, ForeignKey("catalogue_staging_items.id"), nullable=False)
-    raw_observation_id = Column(Integer, ForeignKey("catalogue_raw_observations.id"), nullable=False)
+    staging_item_id = Column(Integer, ForeignKey("catalogue_interpreted_claims.id"), nullable=False)
+    raw_observation_id = Column(Integer, ForeignKey("catalogue_extracted_evidence.id"), nullable=False)
     raw_observation_uuid = Column(String(36), nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
 
-    staging_item = relationship("CatalogueStagingItem", back_populates="raw_observation_links")
-    raw_observation = relationship("CatalogueRawObservation", foreign_keys=[raw_observation_id], viewonly=True)
+    staging_item = relationship("CatalogueInterpretedClaim", back_populates="raw_observation_links")
+    raw_observation = relationship("CatalogueExtractedEvidence", foreign_keys=[raw_observation_id], viewonly=True)
 
 
 class CatalogueValidationIssue(Base):
@@ -609,9 +609,9 @@ class CatalogueServingPublication(Base):
 
 __all__ = [
     "CatalogueSourceDocument",
-    "CatalogueRawObservation",
-    "CatalogueStagingItem",
-    "CatalogueStagingRawObservation",
+    "CatalogueExtractedEvidence",
+    "CatalogueInterpretedClaim",
+    "CatalogueInterpretedClaimEvidence",
     "CatalogueValidationIssue",
     "CatalogueMasteringCandidate",
     "CatalogueReviewDecision",

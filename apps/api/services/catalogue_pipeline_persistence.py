@@ -18,9 +18,9 @@ from sqlalchemy.orm import Session
 import models
 from schemas.catalogue_pipeline import (
     MasteringCandidateV1,
-    RawObservationV1,
+    ExtractedEvidenceV1,
     ServingItemV1,
-    StagingCatalogueItemV1,
+    InterpretedClaimV1,
     ValidationIssueV1,
 )
 from schemas.catalogue_pipeline.common import MbbTerm, PackagingConfiguration, Quantity, UnitOfMeasure
@@ -39,17 +39,17 @@ class CataloguePublicationError(CataloguePersistenceError):
     """Raised when an unapproved or blocked item is being published."""
 
 
-def persist_raw_observation(db: Session, contract: RawObservationV1) -> models.CatalogueRawObservation:
-    """Persist a Raw Observation contract as immutable source evidence."""
+def persist_extracted_evidence(db: Session, contract: ExtractedEvidenceV1) -> models.CatalogueExtractedEvidence:
+    """Persist a extracted evidence observation contract as immutable source evidence."""
 
-    existing = _raw_observation(db, contract.raw_observation_id)
+    existing = _extracted_evidence(db, contract.raw_observation_id)
     if existing is not None:
         return existing
 
     run = _ingestion_run(db, contract.ingestion_run_id)
     source_document = _source_document(db, contract.supplier_catalogue_id)
     location = contract.source_location.model_dump(mode="json")
-    row = models.CatalogueRawObservation(
+    row = models.CatalogueExtractedEvidence(
         raw_observation_uuid=str(contract.raw_observation_id),
         contract_version=contract.contract_version,
         ingestion_run_uuid=str(contract.ingestion_run_id),
@@ -80,10 +80,10 @@ def persist_raw_observation(db: Session, contract: RawObservationV1) -> models.C
     return row
 
 
-def raw_observation_to_contract(row: models.CatalogueRawObservation) -> RawObservationV1:
-    """Reconstruct a Raw Observation contract from persistence."""
+def extracted_evidence_to_contract(row: models.CatalogueExtractedEvidence) -> ExtractedEvidenceV1:
+    """Reconstruct a extracted evidence observation contract from persistence."""
 
-    return RawObservationV1.model_validate(
+    return ExtractedEvidenceV1.model_validate(
         {
             "contract_version": row.contract_version,
             "raw_observation_id": row.raw_observation_uuid,
@@ -107,17 +107,17 @@ def raw_observation_to_contract(row: models.CatalogueRawObservation) -> RawObser
     )
 
 
-def persist_staging_item(db: Session, contract: StagingCatalogueItemV1) -> models.CatalogueStagingItem:
-    """Persist a Staging Catalogue Item and its raw-observation lineage."""
+def persist_interpreted_claim(db: Session, contract: InterpretedClaimV1) -> models.CatalogueInterpretedClaim:
+    """Persist a interpreted claim and its evidence lineage."""
 
-    existing = _staging_item(db, contract.catalogue_item_id)
+    existing = _interpreted_claim(db, contract.catalogue_item_id)
     if existing is not None:
         return existing
 
-    observations = _require_raw_observations(db, contract.raw_observation_ids)
+    observations = _require_extracted_evidences(db, contract.raw_observation_ids)
     _assert_observations_match_trace(observations, str(contract.trace.ingestion_run_id), str(contract.trace.supplier_catalogue_id))
 
-    row = models.CatalogueStagingItem(
+    row = models.CatalogueInterpretedClaim(
         catalogue_item_uuid=str(contract.catalogue_item_id),
         contract_version=contract.contract_version,
         ingestion_run_uuid=str(contract.trace.ingestion_run_id),
@@ -137,7 +137,7 @@ def persist_staging_item(db: Session, contract: StagingCatalogueItemV1) -> model
     db.flush()
     for index, observation in enumerate(observations):
         db.add(
-            models.CatalogueStagingRawObservation(
+            models.CatalogueInterpretedClaimEvidence(
                 staging_item_id=row.id,
                 raw_observation_id=observation.id,
                 raw_observation_uuid=observation.raw_observation_uuid,
@@ -148,11 +148,11 @@ def persist_staging_item(db: Session, contract: StagingCatalogueItemV1) -> model
     return row
 
 
-def staging_item_to_contract(row: models.CatalogueStagingItem) -> StagingCatalogueItemV1:
-    """Reconstruct a Staging Catalogue Item contract from persistence."""
+def interpreted_claim_to_contract(row: models.CatalogueInterpretedClaim) -> InterpretedClaimV1:
+    """Reconstruct a interpreted claim contract from persistence."""
 
     raw_ids = [link.raw_observation_uuid for link in sorted(row.raw_observation_links, key=lambda item: item.sort_order)]
-    return StagingCatalogueItemV1.model_validate(
+    return InterpretedClaimV1.model_validate(
         {
             "contract_version": row.contract_version,
             "trace": {
@@ -245,13 +245,13 @@ def persist_mastering_candidate(db: Session, contract: MasteringCandidateV1) -> 
     if existing is not None:
         return existing
 
-    staging = _staging_item(db, contract.catalogue_item_id)
+    staging = _interpreted_claim(db, contract.catalogue_item_id)
     if staging is None:
-        raise CatalogueLineageError(f"Staging item {contract.catalogue_item_id} does not exist")
+        raise CatalogueLineageError(f"Interpreted claim {contract.catalogue_item_id} does not exist")
     if staging.ingestion_run_uuid != str(contract.trace.ingestion_run_id):
         raise CatalogueLineageError("Mastering Candidate cannot cross ingestion runs")
 
-    observations = _require_raw_observations(db, contract.raw_observation_ids)
+    observations = _require_extracted_evidences(db, contract.raw_observation_ids)
     _assert_observations_match_trace(observations, str(contract.trace.ingestion_run_id), str(contract.trace.supplier_catalogue_id))
     if contract.review_status in {ReviewStatus.APPROVED, ReviewStatus.APPROVED_WITH_OVERRIDE}:
         _raise_for_open_blocking_issues(db, catalogue_item_uuid=str(contract.catalogue_item_id))
@@ -558,26 +558,26 @@ def _mbb_benefit_columns(term: MbbTerm) -> dict[str, Any]:
     }
 
 
-def _require_raw_observations(db: Session, raw_observation_ids: list[UUID]) -> list[models.CatalogueRawObservation]:
-    rows: list[models.CatalogueRawObservation] = []
+def _require_extracted_evidences(db: Session, raw_observation_ids: list[UUID]) -> list[models.CatalogueExtractedEvidence]:
+    rows: list[models.CatalogueExtractedEvidence] = []
     for raw_id in raw_observation_ids:
-        row = _raw_observation(db, raw_id)
+        row = _extracted_evidence(db, raw_id)
         if row is None:
-            raise CatalogueLineageError(f"Raw Observation {raw_id} does not exist")
+            raise CatalogueLineageError(f"extracted evidence observation {raw_id} does not exist")
         rows.append(row)
     return rows
 
 
 def _assert_observations_match_trace(
-    observations: list[models.CatalogueRawObservation],
+    observations: list[models.CatalogueExtractedEvidence],
     ingestion_run_uuid: str,
     supplier_catalogue_uuid: str,
 ) -> None:
     for row in observations:
         if row.ingestion_run_uuid != ingestion_run_uuid:
-            raise CatalogueLineageError("Raw Observation lineage cannot cross ingestion runs")
+            raise CatalogueLineageError("extracted evidence observation lineage cannot cross ingestion runs")
         if row.supplier_catalogue_uuid != supplier_catalogue_uuid:
-            raise CatalogueLineageError("Raw Observation lineage cannot cross source documents")
+            raise CatalogueLineageError("extracted evidence observation lineage cannot cross source documents")
 
 
 def _raise_for_open_blocking_issues(db: Session, *, catalogue_item_uuid: UUID | str) -> None:
@@ -602,12 +602,12 @@ def _source_document(db: Session, supplier_catalogue_id: UUID):
     return db.query(models.CatalogueSourceDocument).filter_by(supplier_catalogue_uuid=str(supplier_catalogue_id)).first()
 
 
-def _raw_observation(db: Session, raw_observation_id: UUID):
-    return db.query(models.CatalogueRawObservation).filter_by(raw_observation_uuid=str(raw_observation_id)).first()
+def _extracted_evidence(db: Session, raw_observation_id: UUID):
+    return db.query(models.CatalogueExtractedEvidence).filter_by(raw_observation_uuid=str(raw_observation_id)).first()
 
 
-def _staging_item(db: Session, catalogue_item_id: UUID):
-    return db.query(models.CatalogueStagingItem).filter_by(catalogue_item_uuid=str(catalogue_item_id)).first()
+def _interpreted_claim(db: Session, catalogue_item_id: UUID):
+    return db.query(models.CatalogueInterpretedClaim).filter_by(catalogue_item_uuid=str(catalogue_item_id)).first()
 
 
 def _validation_issue(db: Session, validation_issue_id: UUID):

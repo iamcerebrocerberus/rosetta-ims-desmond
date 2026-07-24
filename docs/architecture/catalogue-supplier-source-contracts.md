@@ -24,8 +24,8 @@ Shared Mastering Candidate / Validation Issue / Serving contracts
 | Layer | Contract source of truth | Purpose |
 |---|---|---|
 | Supplier-specific source contract | `SupplierSourceContractV1` declarations registered by supplier-format ID | Defines expected document structure, source fields, price/packaging/MBB semantics, validation rules, and known ambiguities. |
-| Raw Observation | `catalogue.raw_observation.v1` | Preserves extracted source evidence and exact location. |
-| Staging Item | `catalogue.staging_item.v1` | Separates raw source strings from proposed typed interpretations. |
+| Raw Observation | `catalogue.extracted_evidence.v1` | Preserves extracted source evidence and exact location. |
+| Staging Item | `catalogue.interpreted_claim.v1` | Separates raw source strings from proposed typed interpretations. |
 | Mastering/HITL | `catalogue.mastering_candidate.v1` plus `catalogue.validation_issue.v1` | Proposes canonical/supplier-commercial resolution and records decisions needed from BizOps. |
 | Serving | `catalogue.serving_item.v1` | Exposes only approved information to consumer-facing views or APIs. |
 

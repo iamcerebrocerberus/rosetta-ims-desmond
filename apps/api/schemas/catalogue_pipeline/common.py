@@ -150,7 +150,7 @@ class PackagingConfiguration(ContractModel):
 class FieldEvidence(ContractModel):
     """Field-level provenance and confidence for a proposed interpretation."""
 
-    raw_observation_id: UUID = Field(..., description="Raw Observation that supports this field.")
+    raw_observation_id: UUID = Field(..., description="extracted evidence observation that supports this field.")
     field_path: str | None = Field(None, description="JSON-style field path inside the supporting payload.")
     confidence: Decimal | None = Field(None, ge=Decimal("0"), le=Decimal("1"), description="Field confidence in [0, 1].")
     note: str | None = Field(None, description="Short provenance note.")
@@ -264,13 +264,13 @@ class MbbSelection(ContractModel):
 class LineageReference(ContractModel):
     """Trace from mastered or served values back to staging and raw evidence."""
 
-    catalogue_item_id: UUID = Field(..., description="Staging Catalogue Item identity.")
+    catalogue_item_id: UUID = Field(..., description="interpreted claim identity.")
     raw_observation_ids: list[UUID] = Field(..., min_length=1, description="Raw observations supporting the assertion.")
     field_paths: list[str] = Field(default_factory=list, description="Optional field paths covered by this lineage.")
     review_decision_id: UUID | None = Field(None, description="Review decision that approved or overrode the assertion.")
 
     @model_validator(mode="after")
-    def _raw_observation_ids_are_unique(self):
+    def _extracted_evidence_ids_are_unique(self):
         if len(self.raw_observation_ids) != len(set(self.raw_observation_ids)):
             raise ValueError("lineage raw_observation_ids must be unique")
         return self

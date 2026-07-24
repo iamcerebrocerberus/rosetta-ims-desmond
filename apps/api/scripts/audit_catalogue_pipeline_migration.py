@@ -48,8 +48,8 @@ def collect_catalogue_migration_audit(engine=database.engine) -> dict[str, Any]:
         pipeline_counts = {
             "source_documents": _scalar(conn, "SELECT COUNT(*) FROM catalogue_source_documents"),
             "ingestion_runs": _scalar(conn, "SELECT COUNT(*) FROM catalogue_ingestion_runs"),
-            "raw_observations": _scalar(conn, "SELECT COUNT(*) FROM catalogue_raw_observations"),
-            "staging_items": _scalar(conn, "SELECT COUNT(*) FROM catalogue_staging_items"),
+            "raw_observations": _scalar(conn, "SELECT COUNT(*) FROM catalogue_extracted_evidence"),
+            "staging_items": _scalar(conn, "SELECT COUNT(*) FROM catalogue_interpreted_claims"),
             "validation_issues": _scalar(conn, "SELECT COUNT(*) FROM catalogue_validation_issues"),
             "mastering_candidates": _scalar(conn, "SELECT COUNT(*) FROM catalogue_mastering_candidates"),
             "serving_publications": _scalar(conn, "SELECT COUNT(*) FROM catalogue_serving_publications"),

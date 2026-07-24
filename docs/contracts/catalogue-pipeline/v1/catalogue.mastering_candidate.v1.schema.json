@@ -186,7 +186,7 @@
           "title": "Note"
         },
         "raw_observation_id": {
-          "description": "Raw Observation that supports this field.",
+          "description": "extracted evidence observation that supports this field.",
           "format": "uuid",
           "title": "Raw Observation Id",
           "type": "string"
@@ -267,7 +267,7 @@
       "description": "Trace from mastered or served values back to staging and raw evidence.",
       "properties": {
         "catalogue_item_id": {
-          "description": "Staging Catalogue Item identity.",
+          "description": "interpreted claim identity.",
           "format": "uuid",
           "title": "Catalogue Item Id",
           "type": "string"
@@ -1512,7 +1512,7 @@
       "description": "Optional Brand resolution."
     },
     "catalogue_item_id": {
-      "description": "Staging Catalogue Item identity.",
+      "description": "interpreted claim identity.",
       "format": "uuid",
       "title": "Catalogue Item Id",
       "type": "string"
@@ -1554,7 +1554,7 @@
     },
     "lineage": {
       "$ref": "#/$defs/LineageReference",
-      "description": "Top-level lineage back to staging and raw observations."
+      "description": "Top-level lineage back to staging and extracted evidence observations."
     },
     "mastering_candidate_id": {
       "description": "Mastering Candidate identity.",

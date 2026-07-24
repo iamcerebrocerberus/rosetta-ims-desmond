@@ -1,5 +1,5 @@
 {
-  "model": "RawObservationV1",
+  "model": "ExtractedEvidenceV1",
   "payload": {
     "contract_version": "catalogue.raw_observation.v2",
     "raw_observation_id": "22222222-2222-4222-8222-222222222221",

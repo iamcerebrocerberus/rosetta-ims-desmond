@@ -1,32 +1,35 @@
-# Rename "Raw Observation" to "Extracted Evidence Observation"
+# Rename "Raw Observation" to "Extracted Evidence" — RESOLVED
 
-Status: follow-up, not urgent
+Status: resolved 2026-07-24
 
-## Problem
+The timeline-consistent rename is complete. "Raw Observation" was the
+extraction stage's output (step 4, Staging layer), never the file-only raw
+stage (steps 1-2) — that confusion is now removed at every level someone reads.
 
-Two different things currently share the word "raw":
+## What was renamed
 
-| Concept | What it is | Where it lives |
+| Kind | Old | New |
 |---|---|---|
-| Raw stage | File-only preservation + verification of the exact supplier upload (no extraction, no AI) | `orchestration/catalogue_raw_stage.py`, `CatalogueSourceDocument`, `CatalogueRawStageAttempt` |
-| "Raw Observation" | Verbatim evidence (text/cells, source location, provider/model metadata, confidence) produced by the EXTRACTION stage | `CatalogueRawObservation`, `catalogue.raw_observation.v1` contract, `RawObservationService` |
+| Physical table | `catalogue_raw_observations` | `catalogue_extracted_evidence` |
+| Link table | `catalogue_staging_raw_observations` | `catalogue_interpreted_claim_evidence` |
+| Contract ID | `catalogue.raw_observation.v1` | `catalogue.extracted_evidence.v1` |
+| Model class | `CatalogueRawObservation` | `CatalogueExtractedEvidence` |
+| Contract class | `RawObservationV1` | `ExtractedEvidenceV1` |
+| Service | `RawObservationService` | `ExtractedEvidenceService` |
+| Command | `CaptureRawObservationsCommand` / `RawObservationInput` | `CaptureExtractedEvidenceCommand` / `ExtractedEvidenceInput` |
+| Task | `capture-raw-observations` | `capture-extracted-evidence` |
+| Persistence fns | `persist_raw_observation`, `raw_observation_to_contract` | `persist_extracted_evidence`, `extracted_evidence_to_contract` |
 
-The execution boundary is correct — extraction runs strictly after the raw
-stage — but the naming invites confusion.
+Existing databases migrate in place via `database.run_pre_create_renames`
+(runs before `create_all`; data-preserving `ALTER TABLE ... RENAME`, stored
+`contract_version` values updated, idempotent).
 
-## Decision for now
+## Deliberate residuals (serialized field names — kept)
 
-Docstrings and architecture docs distinguish the two; new code and docs say
-"extracted evidence observation". No table/contract rename yet: it would touch
-the persisted table, the versioned `catalogue.raw_observation.v1` JSON contract,
-the stage service, persistence mappers and many tests — too broad to piggyback
-on a correction task.
-
-## When renaming
-
-- Introduce `catalogue.extracted_evidence_observation.v1` as a successor
-  contract version rather than mutating v1 in place.
-- Rename table via migration (`catalogue_raw_observations` →
-  `catalogue_extracted_evidence_observations`) once Alembic exists.
-- Rename `RawObservationService.capture` and the stage adapter symbols in the
-  same change; grep target: `raw_observation`.
+Serialized **contract field names** stay `raw_observation_id` / `raw_observation_ids`
+and DB **column names** stay `raw_observation_uuid`, `catalogue_item_uuid`, etc.
+Renaming those changes the JSON wire contract and every persisted row's keys —
+a field-level contract redesign, out of scope for a naming pass. Some
+constraint/index names on migrated tables also keep their historical names
+(cosmetic; fresh DBs get the new-derived names). Revisit only alongside a
+contract-version bump.
