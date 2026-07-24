@@ -767,3 +767,91 @@ def test_reordered_replay_batch_is_fully_reused(db):
     assert replay.metrics.created_count == 0
     assert set(replay.output_ids) == set(first.output_ids)
     assert db.query(models.CatalogueRawObservation).count() == 2
+
+
+# ── Intermediate 5-6: persisted-evidence handoff, atomic claims, claim replay ─
+
+import copy  # noqa: E402
+
+from orchestration.catalogue_stage_adapter import evidence_from_persisted_observation  # noqa: E402
+from orchestration.catalogue_tasks import build_staging_items_task  # noqa: E402
+from services.catalogue_interpretation import InterpretationOutcome, InterpretedItem  # noqa: E402
+
+
+def test_interpretation_input_reconstructs_faithfully_from_persisted_evidence(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db, key="page:1:line:7")
+
+    row = db.query(models.CatalogueRawObservation).one()
+    contract = persistence.raw_observation_to_contract(row)
+    evidence = evidence_from_persisted_observation(contract)
+
+    assert evidence.observation_key == "page:1:line:7"  # from persisted source_metadata/location
+    assert evidence.raw_text == '10447 Healthy Cuisine 24/2.9 oz HK$13.10'
+    assert evidence.extraction_method.value == "MODEL_TEXT"
+    assert evidence.confidence == Decimal("0.96")
+    assert evidence.source_metadata.get("row_key") == "page:1:line:7"
+
+
+def test_claim_batch_is_atomic_no_partial_claims_on_failure(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db, key="claim-batch-1")
+
+    good = InterpretedItem(
+        observation_key="claim-batch-1",
+        raw_observation_id=raw_id,
+        raw_fields=_raw_fields(),
+        proposed_fields=_proposed_fields(raw_id),
+        provenance={"interpreter": "model"},
+    )
+    bad = InterpretedItem(
+        observation_key="claim-batch-2",
+        raw_observation_id=raw_id,
+        raw_fields=_raw_fields(),
+        proposed_fields={"cost": {"amount": "not-a-number", "currency": "HKD"}},
+        provenance={"interpreter": "model"},
+    )
+
+    with pytest.raises(Exception):
+        build_staging_items_task.fn(InterpretationOutcome(items=(good, bad)))
+
+    assert db.query(models.CatalogueStagingItem).count() == 0
+
+
+def test_claim_replay_with_confidence_drift_reuses_the_immutable_first_claim(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db, key="claim-replay-1")
+    service = stages.StagingCatalogueService(db)
+
+    def _command(confidence: str):
+        proposed = copy.deepcopy(_proposed_fields(raw_id))
+        for value in proposed.values():
+            if isinstance(value, dict) and isinstance(value.get("evidence"), dict):
+                value["evidence"]["confidence"] = confidence
+        return stages.BuildStagingItemCommand(
+            raw_observation_ids=(raw_id,),
+            raw_fields=_raw_fields(),
+            proposed_fields=proposed,
+            idempotency_key="claim-replay-1",
+            metadata={"source_observation_key": "claim-replay-1", "interpretation": {"interpreter": "model"}},
+        )
+
+    first = service.build_item(_command("0.96"))
+    replay = service.build_item(_command("0.87"))
+
+    assert first.output_ids == replay.output_ids
+    assert replay.metrics.reused_count == 1
+    assert db.query(models.CatalogueStagingItem).count() == 1
+    # Genuine proposal drift under the same identity stays a controlled conflict.
+    drifted = copy.deepcopy(_proposed_fields(raw_id))
+    drifted["product_name"]["value"] = "A Different Product Name"
+    with pytest.raises(stages.IdempotencyConflict):
+        service.build_item(
+            stages.BuildStagingItemCommand(
+                raw_observation_ids=(raw_id,),
+                raw_fields=_raw_fields(),
+                proposed_fields=drifted,
+                idempotency_key="claim-replay-1",
+                metadata={"source_observation_key": "claim-replay-1", "interpretation": {"interpreter": "model"}},
+            )
+        )

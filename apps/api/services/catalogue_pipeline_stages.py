@@ -488,7 +488,13 @@ class CatalogueValidationService(_TransactionalService):
 
 
 class StagingCatalogueService(_TransactionalService):
-    """Transform raw observations into one staging proposal."""
+    """Persist interpreted claims (timeline step 6, INTERMEDIATE layer).
+
+    Terminology: despite the historical "staging" name, these records are the
+    Intermediate layer's interpreted claims — the supplier contract has
+    already been applied by interpretation (step 5). The Staging layer's
+    records are the extracted evidence observations (step 4).
+    """
 
     def build_item(self, command: BuildStagingItemCommand) -> StageResult:
         if not command.raw_observation_ids:
@@ -1508,9 +1514,35 @@ def _raw_material(contract: RawObservationV1) -> dict[str, Any]:
 
 
 def _staging_material(contract: StagingCatalogueItemV1) -> dict[str, Any]:
+    """Material equality for interpreted-claim (step 6) replay.
+
+    Mirrors the step-4 policy: per-attempt volatile values — ``created_at``
+    and the model confidence recorded inside per-field evidence — are
+    excluded, so re-interpreting identical evidence with only confidence
+    drift reuses the immutable first claim. Proposal VALUES, evidence links,
+    raw fields, lineage and interpreter identity remain material: genuine
+    interpretation drift under the same claim identity stays a controlled
+    IdempotencyConflict rather than silent mutation.
+    """
+
     payload = contract.model_dump(mode="json")
     payload.pop("created_at", None)
+    proposed = payload.get("proposed_fields")
+    if isinstance(proposed, dict):
+        payload["proposed_fields"] = _scrub_evidence_confidence(proposed)
     return payload
+
+
+def _scrub_evidence_confidence(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _scrub_evidence_confidence(item)
+            for key, item in value.items()
+            if key != "confidence"
+        }
+    if isinstance(value, list):
+        return [_scrub_evidence_confidence(item) for item in value]
+    return value
 
 
 def _issue_material(contract: ValidationIssueV1) -> dict[str, Any]:

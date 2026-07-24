@@ -66,7 +66,7 @@ def catalogue_ingestion_flow(*, ingestion_run_id: UUID) -> CatalogueFlowResult:
         runtime_contract = resolve_recorded_contract_task(run_id)
         evidence = extract_source_evidence_task(run_id)
         raw_ids, raw_created, raw_reused = capture_raw_observations_task(raw.run_identity, evidence.observations)
-        interpretation = interpret_raw_evidence_task(evidence.observations, raw_ids, runtime_contract)
+        interpretation = interpret_raw_evidence_task(raw_ids, runtime_contract)
         staging_ids, staging_created, staging_reused = build_staging_items_task(interpretation)
         validation_created, validation_reused, blocking_count = evaluate_staging_items_task(staging_ids)
         candidate_created, candidate_reused, candidate_warnings = prepare_eligible_candidates_task(
@@ -92,6 +92,9 @@ def catalogue_ingestion_flow(*, ingestion_run_id: UUID) -> CatalogueFlowResult:
             mastering_candidates_created=candidate_created,
             mastering_candidates_reused=candidate_reused,
             rows_rejected=evidence.rejected_units,
+            rows_interpreted=len(interpretation.items),
+            rows_skipped_non_catalogue=interpretation.skipped_count,
+            interpretation_degraded=bool(interpretation.metadata.get("degraded")),
             warnings=warnings,
             human_review_required=True,
         )

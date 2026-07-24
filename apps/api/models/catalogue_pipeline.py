@@ -172,7 +172,12 @@ class CatalogueRawObservation(Base):
 
 
 class CatalogueStagingItem(Base):
-    """Raw source-field snapshot plus typed proposed interpretation."""
+    """Interpreted claim (timeline step 6, INTERMEDIATE layer).
+
+    Historical name: these rows are NOT the Staging layer (extracted
+    evidence); they hold what the supplier contract + interpreter proposed
+    the evidence MEANS. Rename tracked in docs/technical-debt/
+    rename-staging-item-to-interpreted-claim.md. Original docstring: Raw source-field snapshot plus typed proposed interpretation."""
 
     __tablename__ = "catalogue_staging_items"
     __table_args__ = (

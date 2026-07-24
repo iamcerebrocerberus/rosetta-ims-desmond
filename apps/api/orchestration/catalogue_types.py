@@ -140,6 +140,9 @@ class CatalogueFlowResult:
     mastering_candidates_created: int = 0
     mastering_candidates_reused: int = 0
     rows_rejected: int = 0
+    rows_interpreted: int = 0
+    rows_skipped_non_catalogue: int = 0
+    interpretation_degraded: bool = False
     warnings: tuple[str, ...] = ()
     human_review_required: bool = False
     error_code: str | None = None

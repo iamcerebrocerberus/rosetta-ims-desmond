@@ -89,18 +89,31 @@ class InterpretationTransientError(RuntimeError):
 
 @dataclass(frozen=True)
 class InterpretedItem:
-    """One staged-row proposal derived from exactly one Raw Observation."""
+    """One interpreted claim derived from exactly one persisted evidence observation.
+
+    ``provenance`` records WHO produced the proposals (model identity,
+    deterministic contract-cell mapping, or none when degraded), whether the
+    provider returned no verdict, and which model values were dropped by the
+    grounding check. It is persisted onto the claim's metadata.
+    """
 
     observation_key: str
     raw_observation_id: UUID
     raw_fields: dict[str, Any]
     proposed_fields: dict[str, Any]
+    provenance: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class InterpretationOutcome:
-    """Interpretation results plus accounting for skipped non-catalogue rows."""
+    """Interpretation results plus durable verdict accounting.
+
+    ``metadata`` carries machine-readable accounting (interpreted /
+    skipped-non-catalogue / no-verdict / grounding-dropped counts and the
+    degraded flag) so the run record can distinguish "interpreted as non-row"
+    from "never interpreted".
+    """
 
     items: tuple[InterpretedItem, ...]
     warnings: tuple[str, ...] = ()
@@ -148,6 +161,8 @@ def interpret_observations(
 
     items: list[InterpretedItem] = []
     skipped = 0
+    no_verdict = 0
+    grounding_dropped_total = 0
     for observation, raw_id in pairs:
         key = observation.observation_key
         if _has_cells(observation):
@@ -155,7 +170,8 @@ def interpret_observations(
             if fields is None:
                 skipped += 1
                 continue
-            items.append(_item_from_fields(observation, raw_id, fields, runtime_contract))
+            provenance = _provenance("contract_cells")
+            items.append(_item_from_fields(observation, raw_id, fields, runtime_contract, provenance=provenance))
             continue
 
         if key in model_fields:
@@ -163,20 +179,111 @@ def interpret_observations(
             if fields is None:
                 skipped += 1
                 continue
-            items.append(_item_from_fields(observation, raw_id, _sanitize_fields(fields), runtime_contract))
+            grounded, dropped = _ground_model_fields(_sanitize_fields(fields), observation)
+            grounding_dropped_total += len(dropped)
+            item_warnings: tuple[str, ...] = ()
+            if dropped:
+                item_warnings = tuple(f"ungrounded {name} value dropped by grounding check" for name in dropped)
+                warnings.append(f"{key}: ungrounded value(s) dropped by grounding check: {', '.join(dropped)}")
+            provenance = _provenance("model", grounding_dropped=dropped)
+            items.append(
+                _item_from_fields(
+                    observation, raw_id, grounded, runtime_contract,
+                    provenance=provenance, warnings=item_warnings,
+                )
+            )
             continue
 
-        item_warnings: tuple[str, ...] = ()
+        item_warnings = ()
         if text_rows and not model_degraded:
+            no_verdict += 1
             item_warnings = ("interpretation returned no verdict for this observation",)
             warnings.append(f"{key}: no interpretation verdict; staged for manual review")
-        items.append(_item_from_fields(observation, raw_id, {}, runtime_contract, warnings=item_warnings))
+            provenance = _provenance("model", no_verdict=True)
+        else:
+            provenance = _provenance("none", degraded=True)
+        items.append(
+            _item_from_fields(observation, raw_id, {}, runtime_contract, provenance=provenance, warnings=item_warnings)
+        )
 
     return InterpretationOutcome(
         items=tuple(items),
         warnings=tuple(warnings),
         skipped_count=skipped,
+        metadata={
+            "interpreted_items": len(items),
+            "skipped_non_catalogue": skipped,
+            "no_verdict_items": no_verdict,
+            "grounding_dropped_total": grounding_dropped_total,
+            "degraded": model_degraded,
+        },
     )
+
+
+def _provenance(
+    interpreter: str,
+    *,
+    degraded: bool = False,
+    no_verdict: bool = False,
+    grounding_dropped: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    provenance: dict[str, Any] = {"interpreter": interpreter}
+    if interpreter == "model":
+        provenance["model"] = INTERPRETATION_MODEL
+        provenance["model_version"] = INTERPRETATION_MODEL
+    if degraded:
+        provenance["degraded"] = True
+    if no_verdict:
+        provenance["no_verdict"] = True
+    if grounding_dropped:
+        provenance["grounding_dropped"] = list(grounding_dropped)
+    return provenance
+
+
+def _ground_model_fields(
+    fields: dict[str, Any],
+    observation: ExtractedEvidence,
+) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """Mechanical groundedness check for model-produced values.
+
+    Every proposed value must appear verbatim (casefolded, whitespace-free
+    containment; currency tokens stripped for numeric fields) in the
+    observation's raw text/cells. Ungrounded values are DROPPED — never
+    silently kept — and reported so the claim routes to human review. This
+    enforces the no-invention contract mechanically and blunts prompt
+    injection via malicious catalogue rows. Deterministic cell-mapped fields
+    and contract constants are grounded by construction and are not checked
+    here.
+    """
+
+    corpus_parts: list[str] = []
+    if observation.raw_text:
+        corpus_parts.append(observation.raw_text)
+    for cell in observation.raw_cells:
+        if cell.raw_value is not None:
+            corpus_parts.append(str(cell.raw_value))
+        if cell.column_name:
+            corpus_parts.append(cell.column_name)
+    corpus = _fold_for_grounding(" ".join(corpus_parts))
+
+    grounded: dict[str, Any] = {}
+    dropped: list[str] = []
+    for key, value in fields.items():
+        if key == "confidence" or value is None or str(value).strip() == "":
+            grounded[key] = value
+            continue
+        candidate = str(value)
+        if key in {"cost_price", "rrp", "order_increment_qty"}:
+            candidate = candidate.replace(",", "").replace("$", "").replace("HKD", "").replace("HK$", "")
+        if _fold_for_grounding(candidate) in corpus:
+            grounded[key] = value
+        else:
+            dropped.append(key)
+    return grounded, tuple(dropped)
+
+
+def _fold_for_grounding(value: str) -> str:
+    return re.sub(r"\s+", "", value).casefold()
 
 
 def _model_interpret_rows(rows: dict[str, str], runtime_contract) -> dict[str, dict[str, Any] | None]:
@@ -213,9 +320,7 @@ def _model_interpret_rows(rows: dict[str, str], runtime_contract) -> dict[str, d
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:  # noqa: BLE001 - provider surface is broad
-            if _looks_transient(exc):
-                raise InterpretationTransientError("interpretation provider failed temporarily") from exc
-            raise InterpretationProviderError("interpretation provider request failed") from exc
+            raise _classify_interpretation_failure(exc) from exc
         text_blocks = [block.text for block in message.content if getattr(block, "type", None) == "text"]
         try:
             payload = _strict_json_object("\n".join(text_blocks))
@@ -276,6 +381,7 @@ def _item_from_fields(
     fields: dict[str, Any],
     runtime_contract,
     *,
+    provenance: dict[str, Any] | None = None,
     warnings: tuple[str, ...] = (),
 ) -> InterpretedItem:
     raw_fields = {
@@ -321,18 +427,21 @@ def _item_from_fields(
         raw_observation_id=raw_observation_id,
         raw_fields=raw_fields,
         proposed_fields=proposed,
+        provenance=dict(provenance or {}),
         warnings=warnings,
     )
 
 
 def _cost_proposal(value: Any, runtime_contract, evidence: dict[str, Any]) -> dict[str, Any] | None:
     amount = _decimal_or_none(value)
-    basis = runtime_contract.declaration.pricing.price_basis
+    pricing = runtime_contract.declaration.pricing
+    basis = pricing.price_basis
     if amount is None or basis is None or basis.code is None:
         return None
     return {
         "amount": str(amount),
-        "currency": "HKD",
+        # Currency is a CONTRACT declaration, never an interpretation default.
+        "currency": pricing.currency,
         "price_basis": basis.model_dump(mode="json"),
         "evidence": evidence,
     }
@@ -455,6 +564,35 @@ def _strict_json_object(raw: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("provider response must be one JSON object")
     return value
+
+
+def _classify_interpretation_failure(exc: Exception) -> Exception:
+    """Typed retry classification for the interpretation provider seam.
+
+    Mirrors the Stage 3 vision seam: timeouts/connection/rate-limit/5xx are
+    transient (task retries); authentication/permission failures degrade like
+    an unconfigured provider (claims stage unproposed for review — the run
+    does not fail); bad requests and schema violations are non-retryable
+    provider errors (also degrade). Falls back to a conservative string
+    heuristic only for non-SDK exceptions.
+    """
+
+    try:
+        import anthropic
+
+        if isinstance(exc, (anthropic.APITimeoutError, anthropic.APIConnectionError, anthropic.RateLimitError)):
+            return InterpretationTransientError("interpretation provider failed temporarily")
+        if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+            return InterpretationUnavailable("interpretation provider rejected the configured credentials")
+        if isinstance(exc, anthropic.APIStatusError):
+            if exc.status_code in {408, 409, 429} or exc.status_code >= 500:
+                return InterpretationTransientError("interpretation provider failed temporarily")
+            return InterpretationProviderError("interpretation provider request failed")
+    except ImportError:
+        pass
+    if _looks_transient(exc):
+        return InterpretationTransientError("interpretation provider failed temporarily")
+    return InterpretationProviderError("interpretation provider request failed")
 
 
 def _looks_transient(exc: Exception) -> bool:

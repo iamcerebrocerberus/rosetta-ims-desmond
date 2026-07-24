@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from schemas.catalogue_pipeline.enums import ReviewRequirement
+from schemas.catalogue_pipeline.raw_observation_v1 import RawObservationV1
 from services import catalogue_pipeline_stages as stages
 from services.catalogue_evidence_extraction import ExtractedEvidence
 from services.catalogue_interpretation import InterpretedItem
@@ -35,16 +37,58 @@ def raw_input_from_extracted_evidence(evidence: ExtractedEvidence) -> stages.Raw
     )
 
 
-def staging_command_from_interpretation(item: InterpretedItem) -> stages.BuildStagingItemCommand:
-    """Create a Staging command from one post-Raw interpreted observation."""
+def evidence_from_persisted_observation(contract: RawObservationV1) -> ExtractedEvidence:
+    """Reconstruct interpretation input from a PERSISTED step-4 observation.
 
+    The Intermediate layer consumes durable evidence, never the extraction
+    task's in-memory output — the persisted record is the truth that
+    interpretation must be grounded against.
+    """
+
+    metadata = dict(contract.source_metadata or {})
+    observation_key = metadata.get("observation_key") or contract.source_location.source_object_key or str(
+        contract.raw_observation_id
+    )
+    return ExtractedEvidence(
+        observation_key=observation_key,
+        source_location=contract.source_location,
+        raw_text=contract.raw_text,
+        raw_cells=tuple(contract.raw_cells),
+        extraction_method=contract.extraction_method,
+        provider=metadata.get("provider"),
+        provider_version=metadata.get("provider_version"),
+        provider_request_id=metadata.get("provider_request_id"),
+        model=contract.extraction_model,
+        model_version=contract.extraction_model_version,
+        confidence=contract.extraction_confidence,
+        source_metadata=metadata,
+    )
+
+
+def staging_command_from_interpretation(item: InterpretedItem) -> stages.BuildStagingItemCommand:
+    """Create an interpreted-claim (step 6) command from one interpretation.
+
+    Claims whose interpretation was degraded, returned no verdict, or had
+    values dropped by the grounding check are explicitly forced to REQUIRED
+    review — an empty or trimmed claim must never look reviewable-as-clean.
+    """
+
+    provenance = dict(item.provenance or {})
+    needs_review = (
+        provenance.get("interpreter") == "none"
+        or provenance.get("no_verdict")
+        or provenance.get("grounding_dropped")
+    )
     return stages.BuildStagingItemCommand(
         raw_observation_ids=(item.raw_observation_id,),
         raw_fields=item.raw_fields,
         proposed_fields=item.proposed_fields,
         idempotency_key=item.observation_key,
-        review_requirement=None,
-        metadata={"source_observation_key": item.observation_key},
+        review_requirement=ReviewRequirement.REQUIRED if needs_review else None,
+        metadata={
+            "source_observation_key": item.observation_key,
+            "interpretation": provenance,
+        },
     )
 
 

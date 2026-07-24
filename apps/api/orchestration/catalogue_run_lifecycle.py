@@ -157,6 +157,9 @@ def _metrics_json(result: CatalogueFlowResult) -> str:
             "mastering_candidates_created": result.mastering_candidates_created,
             "mastering_candidates_reused": result.mastering_candidates_reused,
             "rows_rejected": result.rows_rejected,
+            "rows_interpreted": result.rows_interpreted,
+            "rows_skipped_non_catalogue": result.rows_skipped_non_catalogue,
+            "interpretation_degraded": result.interpretation_degraded,
             "human_review_required": result.human_review_required,
         }
     )

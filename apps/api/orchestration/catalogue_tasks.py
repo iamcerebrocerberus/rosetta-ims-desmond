@@ -7,6 +7,7 @@ from uuid import UUID
 from prefect import get_run_logger, task
 
 import database
+import models
 from services import catalogue_pipeline_stages as stages
 from services.catalogue_interpretation import (
     InterpretationOutcome,
@@ -20,6 +21,7 @@ from .catalogue_raw_stage import complete_raw_stage
 from .catalogue_run_lifecycle import claim_queued_run, complete_run, fail_run, terminal_result_for_replay
 from .catalogue_source_loader import load_and_verify_source_asset
 from .catalogue_stage_adapter import (
+    evidence_from_persisted_observation,
     mastering_command_for_staging,
     raw_input_from_extracted_evidence,
     staging_command_from_interpretation,
@@ -136,12 +138,34 @@ def capture_raw_observations_task(
     retry_condition_fn=_retry_transient_provider,
 )
 def interpret_raw_evidence_task(
-    observations: tuple,
     raw_observation_ids: tuple[UUID, ...],
     runtime_contract,
 ) -> InterpretationOutcome:
+    """Intermediate handoff: interpret PERSISTED step-4 evidence by durable ID.
+
+    Reloads each observation from persistence — never the extraction task's
+    in-memory objects — so interpretation is grounded against exactly what
+    Stage 4 committed.
+    """
+
+    from services import catalogue_pipeline_persistence as persistence
+
+    db = database.SessionLocal()
     try:
-        return interpret_observations(observations, raw_observation_ids, runtime_contract)
+        observations = []
+        for raw_id in raw_observation_ids:
+            row = (
+                db.query(models.CatalogueRawObservation)
+                .filter_by(raw_observation_uuid=str(raw_id))
+                .first()
+            )
+            if row is None:
+                raise stages.UpstreamRecordNotFound(f"Persisted evidence observation {raw_id} was not found")
+            observations.append(evidence_from_persisted_observation(persistence.raw_observation_to_contract(row)))
+    finally:
+        db.close()
+    try:
+        return interpret_observations(tuple(observations), tuple(raw_observation_ids), runtime_contract)
     except InterpretationTransientError as exc:
         raise TransientProviderError(str(exc)) from exc
 
@@ -150,9 +174,15 @@ def interpret_raw_evidence_task(
 def build_staging_items_task(
     interpretation: InterpretationOutcome,
 ) -> tuple[tuple[UUID, ...], int, int]:
+    """Persist interpreted claims (step 6) as one ATOMIC batch.
+
+    Each build stages within the shared transaction and a single commit
+    lands the whole batch — a mid-batch failure leaves no partial claims.
+    """
+
     db = database.SessionLocal()
     try:
-        service = stages.StagingCatalogueService(db)
+        service = stages.StagingCatalogueService(db, commit=False)
         output_ids: list[UUID] = []
         created = reused = 0
         for item in interpretation.items:
@@ -160,7 +190,11 @@ def build_staging_items_task(
             output_ids.extend(UUID(str(output_id)) for output_id in result.output_ids)
             created += result.metrics.created_count
             reused += result.metrics.reused_count
+        db.commit()
         return tuple(output_ids), created, reused
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

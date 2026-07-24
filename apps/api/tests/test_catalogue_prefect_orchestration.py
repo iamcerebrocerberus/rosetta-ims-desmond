@@ -52,13 +52,11 @@ models.Base.metadata.create_all(bind=database.engine)
 database.run_migrations(database.engine)
 
 
-HILLS_ROW_TEXT = "10447 Healthy Cuisine Chicken 82g HK$13.10"
+HILLS_ROW_TEXT = "10447 Hill's Healthy Cuisine Chicken 82g HK$13.10 ambiguous offer text"
 HILLS_FIELDS = {
     "description": "Hill's Healthy Cuisine Chicken 82g",
     "brand": "Hill's",
-    "category": "Food",
     "supplier_sku": "10447",
-    "barcode": "052742104470",
     "cost_price": 13.1,
     "pack_size": "82g",
     "variant": "82g",
@@ -669,3 +667,138 @@ def test_transient_provider_error_is_typed_and_retryable_non_transient_is_not(db
         extract_source_evidence(
             load_and_verify_source_asset(db, ingestion_run_id=asset_run.ingestion_run_id)
         )
+
+
+# ── Intermediate 5-6 corrections: grounding, provenance, accounting, seam ───
+
+
+def test_ungrounded_model_values_are_dropped_flagged_and_routed_to_review(db, monkeypatch):
+    result = _submit(db)
+    contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
+    observation = _evidence()  # raw text: HILLS_ROW_TEXT
+    raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    invented = dict(HILLS_FIELDS)
+    invented["barcode"] = "052742104470"      # not present in the row text
+    invented["category"] = "Food"             # not present in the row text
+    monkeypatch.setattr(
+        catalogue_interpretation,
+        "_model_interpret_rows",
+        lambda rows, _contract: {observation.observation_key: invented},
+    )
+
+    outcome = interpret_observations((observation,), (raw_id,), contract)
+
+    item = outcome.items[0]
+    # Grounded values survive; invented values are dropped, never kept.
+    assert item.proposed_fields["supplier_sku"]["value"] == "10447"
+    assert "barcode" not in item.proposed_fields
+    assert "category" not in item.proposed_fields
+    assert item.raw_fields["barcode"] is None
+    assert sorted(item.provenance["grounding_dropped"]) == ["barcode", "category"]
+    assert any("grounding check" in warning for warning in outcome.warnings)
+    assert outcome.metadata["grounding_dropped_total"] == 2
+
+    # A trimmed claim must reach humans: the staging command forces REQUIRED.
+    from orchestration.catalogue_stage_adapter import staging_command_from_interpretation
+    from schemas.catalogue_pipeline.enums import ReviewRequirement
+
+    command = staging_command_from_interpretation(item)
+    assert command.review_requirement == ReviewRequirement.REQUIRED
+    assert command.metadata["interpretation"]["interpreter"] == "model"
+
+
+def test_cost_currency_comes_from_the_supplier_contract_not_a_default(db, monkeypatch):
+    result = _submit(db)
+    contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
+    observation = _evidence()
+    raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    monkeypatch.setattr(
+        catalogue_interpretation,
+        "_model_interpret_rows",
+        lambda rows, _contract: {observation.observation_key: dict(HILLS_FIELDS)},
+    )
+
+    outcome = interpret_observations((observation,), (raw_id,), contract)
+
+    proposal = outcome.items[0].proposed_fields["cost"]
+    assert proposal["currency"] == contract.declaration.pricing.currency
+
+
+def test_interpreter_provenance_is_recorded_for_model_cells_and_degraded_paths(db, monkeypatch):
+    result = _submit(db)
+    contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
+    raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+
+    # Model path
+    text_row = _evidence()
+    monkeypatch.setattr(
+        catalogue_interpretation,
+        "_model_interpret_rows",
+        lambda rows, _contract: {text_row.observation_key: dict(HILLS_FIELDS)},
+    )
+    model_outcome = interpret_observations((text_row,), (raw_id,), contract)
+    assert model_outcome.items[0].provenance["interpreter"] == "model"
+    assert model_outcome.items[0].provenance["model"] == catalogue_interpretation.INTERPRETATION_MODEL
+
+    # Degraded path (provider unavailable): interpreter "none" and REQUIRED review.
+    monkeypatch.setattr(
+        catalogue_interpretation,
+        "_model_interpret_rows",
+        lambda rows, _contract: (_ for _ in ()).throw(
+            catalogue_interpretation.InterpretationUnavailable("no provider configured")
+        ),
+    )
+    degraded = interpret_observations((text_row,), (raw_id,), contract)
+    assert degraded.items[0].provenance == {"interpreter": "none", "degraded": True}
+    assert degraded.metadata["degraded"] is True
+    from orchestration.catalogue_stage_adapter import staging_command_from_interpretation
+    from schemas.catalogue_pipeline.enums import ReviewRequirement
+
+    assert staging_command_from_interpretation(degraded.items[0]).review_requirement == ReviewRequirement.REQUIRED
+
+
+def test_flow_persists_interpretation_accounting_in_run_metrics(db, monkeypatch):
+    import json as _json
+
+    result = _submit(db, content=_text_pdf_bytes(["Hill's price list header", HILLS_ROW_TEXT]))
+
+    def verdicts(rows, _contract):
+        return {
+            key: (dict(HILLS_FIELDS) if "hk$13.10" in text.casefold() else None)
+            for key, text in rows.items()
+        }
+
+    monkeypatch.setattr(catalogue_interpretation, "_model_interpret_rows", verdicts)
+
+    flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
+
+    assert flow_result.rows_interpreted == 1
+    assert flow_result.rows_skipped_non_catalogue == 1
+    db.expire_all()
+    run = db.query(models.IngestionRun).one()
+    metrics = _json.loads(run.metrics)
+    assert metrics["rows_interpreted"] == 1
+    assert metrics["rows_skipped_non_catalogue"] == 1
+    assert metrics["interpretation_degraded"] is False
+
+
+def test_interpretation_seam_uses_typed_sdk_exception_classification():
+    import anthropic
+    import httpx
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    transient = catalogue_interpretation._classify_interpretation_failure(
+        anthropic.APITimeoutError(request=request)
+    )
+    assert isinstance(transient, catalogue_interpretation.InterpretationTransientError)
+
+    unavailable = catalogue_interpretation._classify_interpretation_failure(
+        anthropic.AuthenticationError("bad key", response=httpx.Response(401, request=request), body=None)
+    )
+    assert isinstance(unavailable, catalogue_interpretation.InterpretationUnavailable)
+
+    provider = catalogue_interpretation._classify_interpretation_failure(
+        anthropic.BadRequestError("schema", response=httpx.Response(400, request=request), body=None)
+    )
+    assert isinstance(provider, catalogue_interpretation.InterpretationProviderError)
