@@ -7,7 +7,6 @@ belongs after Raw persistence.
 
 from __future__ import annotations
 
-import base64
 import csv
 import hashlib
 import io
@@ -29,7 +28,7 @@ from schemas.catalogue_pipeline.enums import ExtractionMethod, SourceFormat
 from schemas.catalogue_pipeline.extracted_evidence_v1 import BoundingBox, RawCell, SourceLocation
 
 
-ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
+GEMINI_MODEL = "gemini-3.1-pro"
 MAX_VISION_TOKENS = 8192
 
 
@@ -466,19 +465,19 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
         if not decision.vision_required:
             completed += 1
             continue
-        if not _anthropic_api_key():
+        if not _gemini_api_key():
             errors.append(
                 ExtractionError(
                     code="EXTRACTION_CONFIGURATION_ERROR",
                     message="Scanned or image-bearing PDF page requires a configured vision provider",
                     unit_key=page_key,
-                    provider="anthropic",
+                    provider="google",
                 )
             )
             continue
         try:
             page_content = _single_page_pdf_bytes(page)
-            response = _call_anthropic_vision(
+            response = _call_gemini_vision(
                 page_content,
                 media_type="application/pdf",
             )
@@ -507,7 +506,7 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
                     code=exc.code,
                     message=exc.public_message,
                     unit_key=page_key,
-                    provider="anthropic",
+                    provider="google",
                     retryable=exc.retryable,
                 )
             )
@@ -539,16 +538,16 @@ def _extract_image(
     media_type: str,
     source_format: SourceFormat,
 ) -> ExtractionResult:
-    if not _anthropic_api_key():
+    if not _gemini_api_key():
         return _failed_result(
             source_format,
             code="EXTRACTION_CONFIGURATION_ERROR",
             message="Image evidence extraction requires a configured vision provider",
             unit_key="image:1",
-            provider="anthropic",
+            provider="google",
         )
     try:
-        response = _call_anthropic_vision(content, media_type=media_type)
+        response = _call_gemini_vision(content, media_type=media_type)
         observations, page_outcome = _vision_observations(
             response,
             extraction_method=ExtractionMethod.MODEL_VISION,
@@ -561,7 +560,7 @@ def _extract_image(
             code=exc.code,
             message=exc.public_message,
             unit_key="image:1",
-            provider="anthropic",
+            provider="google",
             retryable=exc.retryable,
             units_attempted=1,
         )
@@ -654,10 +653,10 @@ def _vision_observations(
                     raw_text=item.raw_text,
                     raw_cells=item.raw_cells,
                     extraction_method=extraction_method,
-                    provider="anthropic",
+                    provider="google",
                     provider_request_id=response.request_id,
-                    model=ANTHROPIC_MODEL,
-                    model_version=ANTHROPIC_MODEL,
+                    model=GEMINI_MODEL,
+                    model_version=GEMINI_MODEL,
                     confidence=item.confidence,
                 )
             )
@@ -682,43 +681,39 @@ def _observation_digest(item: _VisionObservation) -> str:
     return hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
 
 
-def _call_anthropic_vision(content: bytes, *, media_type: str) -> _VisionResponse:
-    try:
-        import anthropic
+def _call_gemini_vision(content: bytes, *, media_type: str) -> _VisionResponse:
+    """Vision/OCR provider seam (Gemini).
 
-        client = anthropic.Anthropic(api_key=_anthropic_api_key())
-        block_type = "document" if media_type == "application/pdf" else "image"
-        message = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=MAX_VISION_TOKENS,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": block_type,
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": base64.standard_b64encode(content).decode(),
-                            },
-                        },
-                        {"type": "text", "text": VISION_EVIDENCE_PROMPT},
-                    ],
-                }
+    The ONLY place a vision provider client is constructed. Sends the source
+    page/image inline (PDF or image bytes) with the verbatim-evidence prompt
+    and returns the raw text envelope. The SDK import is function-level so the
+    provider stays behind this seam and never loads at module import.
+    """
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=_gemini_api_key())
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                types.Part.from_bytes(data=content, mime_type=media_type),
+                VISION_EVIDENCE_PROMPT,
             ],
+            config=types.GenerateContentConfig(max_output_tokens=MAX_VISION_TOKENS),
         )
-        text_blocks = [block.text for block in message.content if getattr(block, "type", None) == "text"]
-        if not text_blocks:
+        try:
+            text = response.text
+        except Exception:
+            text = None
+        if not text or not text.strip():
             raise _VisionExtractionFailure(
                 code="MALFORMED_PROVIDER_RESPONSE",
                 public_message="Vision provider returned no text response",
                 retryable=False,
             )
-        return _VisionResponse(
-            text="\n".join(text_blocks),
-            request_id=getattr(message, "id", None),
-        )
+        return _VisionResponse(text=text, request_id=getattr(response, "response_id", None))
     except _VisionExtractionFailure:
         raise
     except Exception as exc:
@@ -726,50 +721,37 @@ def _call_anthropic_vision(content: bytes, *, media_type: str) -> _VisionRespons
 
 
 def _classify_provider_failure(exc: Exception) -> "_VisionExtractionFailure":
-    """Typed retry classification for the Anthropic provider seam.
+    """Retry classification for the Gemini provider seam.
 
-    Timeouts, connection failures, rate limits, overloads and 5xx responses
-    are retryable. Authentication/permission failures are configuration
-    errors (never retried as transient). Bad requests and schema violations
-    are non-retryable provider errors. Falls back to a conservative string
-    heuristic only for non-SDK exceptions. Raw provider details are never
-    propagated — messages stay sanitized.
+    google-genai API errors carry the HTTP status on ``.code``. 408/409/429
+    and 5xx are retryable; 401/403 are configuration errors (never retried as
+    transient); other 4xx are non-retryable provider errors. Network-level
+    failures (timeouts, connection resets) carry no status and fall back to a
+    conservative message heuristic. Raw provider details are never propagated
+    to the client — messages stay sanitized.
     """
 
-    try:
-        import anthropic
-
-        if isinstance(exc, (anthropic.APITimeoutError, anthropic.APIConnectionError)):
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 400 <= status < 600:
+        if status in {408, 409, 429} or status >= 500:
             return _VisionExtractionFailure(
                 code="TRANSIENT_PROVIDER_ERROR",
                 public_message="Vision provider failed temporarily",
                 retryable=True,
             )
-        if isinstance(exc, anthropic.RateLimitError):
-            return _VisionExtractionFailure(
-                code="TRANSIENT_PROVIDER_ERROR",
-                public_message="Vision provider rate limited the request",
-                retryable=True,
-            )
-        if isinstance(exc, (anthropic.AuthenticationError, anthropic.PermissionDeniedError)):
+        if status in {401, 403}:
             return _VisionExtractionFailure(
                 code="EXTRACTION_CONFIGURATION_ERROR",
                 public_message="Vision provider rejected the configured credentials",
                 retryable=False,
             )
-        if isinstance(exc, anthropic.APIStatusError):
-            retryable = exc.status_code in {408, 409, 429} or exc.status_code >= 500
-            return _VisionExtractionFailure(
-                code="TRANSIENT_PROVIDER_ERROR" if retryable else "PROVIDER_ERROR",
-                public_message=(
-                    "Vision provider failed temporarily"
-                    if retryable
-                    else "Vision provider could not extract source evidence"
-                ),
-                retryable=retryable,
-            )
-    except ImportError:
-        pass
+        return _VisionExtractionFailure(
+            code="PROVIDER_ERROR",
+            public_message="Vision provider could not extract source evidence",
+            retryable=False,
+        )
     retryable = _looks_transient(exc)
     return _VisionExtractionFailure(
         code="TRANSIENT_PROVIDER_ERROR" if retryable else "PROVIDER_ERROR",
@@ -1109,8 +1091,8 @@ def _is_noise_line(line: str) -> bool:
     return any(pattern.match(line) for pattern in _NOISE_LINE_PATTERNS)
 
 
-def _anthropic_api_key() -> str:
-    return os.environ.get("ANTHROPIC_API_KEY", "").strip()
+def _gemini_api_key() -> str:
+    return (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or "").strip()
 
 
 def _looks_transient(exc: Exception) -> bool:

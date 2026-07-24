@@ -69,7 +69,7 @@ HILLS_FIELDS = {
 def db(tmp_path, monkeypatch):
     monkeypatch.setenv("CATALOGUE_UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setenv("CATALOGUE_ORCHESTRATION_MAX_SOURCE_BYTES", str(1024 * 1024))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     session = database.SessionLocal()
     try:
         _reset(session)

@@ -175,12 +175,13 @@ counts as completed only when fully observed or explicitly classified empty.
 No observations + no explicit empty classification + no errors is `NO_EVIDENCE`
 (failed), never `COMPLETE`. Any unit error downgrades the result to `PARTIAL`.
 
-**Provider seam + retry classification.** `_call_anthropic_vision` is the only
-place the Anthropic client is instantiated (imported lazily, function-level).
-Failures are classified by typed SDK exception: timeouts/connection/rate-limit/
-5xx → retryable; auth/permission → non-retryable configuration error;
-bad-request/schema → non-retryable provider error. Raw provider text is never
-persisted or returned.
+**Provider seam + retry classification.** `_call_gemini_vision` is the only
+place the vision provider client (google-genai) is instantiated (imported
+lazily, function-level). Failures are classified by HTTP status on the SDK
+error: 408/409/429 and 5xx → retryable; 401/403 → non-retryable configuration
+error; other 4xx → non-retryable provider error; network-level errors fall
+back to a message heuristic. Raw provider text is never persisted or returned.
+Interpretation (step 5) is a separate Anthropic call — see below.
 
 **Observation identity.** Vision observation keys are `page:<n>:obs:<digest>:<ordinal>`
 where digest = sha256(raw_text + raw_cells + bounding_box). Identical evidence
@@ -354,7 +355,8 @@ to `0.0.0.0`.
 | `CATALOGUE_ORCHESTRATION_MAX_SOURCE_BYTES` | `26214400` | Max verified source size for orchestration reads. |
 | `CATALOGUE_DISPATCH_BATCH_SIZE` | `10` | Docker worker bounded queued-run batch size. |
 | `CATALOGUE_DISPATCH_INTERVAL_SECONDS` | `30` | Docker worker loop sleep between dispatch scans. |
-| `ANTHROPIC_API_KEY` | unset | Used by the vision fallback for scanned pages (missing key fails those pages as configuration errors) and by post-Raw interpretation (missing key degrades to unproposed fields routed to review). |
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | unset | Vision/OCR fallback for scanned/image pages (missing key fails those pages as configuration errors). Text-layer PDFs, spreadsheets and CSV need no key. |
+| `ANTHROPIC_API_KEY` | unset | Post-Raw interpretation (step 5); missing key degrades to unproposed fields routed to review. Also legacy v1 extraction/tagging. |
 | `PREFECT_API_URL` | `http://prefect-server:4200/api` in Docker | Prefect API URL used by the catalogue worker. Tests and local one-shot flows can still run with Prefect's local/ephemeral mode. |
 | `PREFECT_UI_BIND` | `127.0.0.1` | Host interface for the Prefect UI port. |
 | `PREFECT_UI_PORT` | `4200` | Host port for the Prefect UI. |

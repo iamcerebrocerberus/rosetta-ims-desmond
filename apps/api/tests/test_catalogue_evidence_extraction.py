@@ -22,7 +22,7 @@ from services.catalogue_evidence_extraction import ExtractionStatus
 
 
 def test_pdf_text_extraction_is_verbatim_source_located_and_keeps_duplicates(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     content = _pdf_with_pages(
         [
             "SKU | Description | Wholesale\n"
@@ -49,7 +49,7 @@ def test_pdf_text_extraction_is_verbatim_source_located_and_keeps_duplicates(mon
 
 
 def test_pdf_reports_partial_extraction_when_one_page_needs_unconfigured_vision(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     content = _pdf_with_pages(["10447 | Product | HK$13.10", None])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "mixed.pdf", "application/pdf")
@@ -60,11 +60,11 @@ def test_pdf_reports_partial_extraction_when_one_page_needs_unconfigured_vision(
     assert len(result.observations) == 1
     assert result.errors[0].code == "EXTRACTION_CONFIGURATION_ERROR"
     assert result.errors[0].unit_key == "page:2"
-    assert result.errors[0].provider == "anthropic"
+    assert result.errors[0].provider == "google"
 
 
 def test_scanned_pdf_failure_is_operational_error_not_fake_catalogue_row(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
 
     result = catalogue_evidence_extraction.extract_evidence(
         _pdf_with_pages([None]),
@@ -137,7 +137,7 @@ def test_csv_preserves_coordinates_raw_values_empty_cells_and_duplicate_rows():
 
 
 def test_vision_extraction_records_actual_provider_metadata_and_png_media_type(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     called: dict[str, str] = {}
 
     def fake_vision(content: bytes, *, media_type: str):
@@ -166,7 +166,7 @@ def test_vision_extraction_records_actual_provider_metadata_and_png_media_type(m
             request_id="msg_test_123",
         )
 
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
 
     result = catalogue_evidence_extraction.extract_evidence(b"png-bytes", "catalogue.png", "image/png")
 
@@ -174,15 +174,15 @@ def test_vision_extraction_records_actual_provider_metadata_and_png_media_type(m
     assert called["media_type"] == "image/png"
     observation = result.observations[0]
     assert observation.extraction_method == ExtractionMethod.MODEL_VISION
-    assert observation.provider == "anthropic"
+    assert observation.provider == "google"
     assert observation.provider_request_id == "msg_test_123"
-    assert observation.model == evidence_service.ANTHROPIC_MODEL
+    assert observation.model == evidence_service.GEMINI_MODEL
     assert observation.confidence == Decimal("0.91")
     assert observation.source_location.bounding_box.width == Decimal("200")
 
 
 def test_vision_response_rejects_semantic_product_fields(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
 
     def fake_vision(_content: bytes, *, media_type: str):
         assert media_type == "image/jpeg"
@@ -203,7 +203,7 @@ def test_vision_response_rejects_semantic_product_fields(monkeypatch):
             )
         )
 
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
 
     result = catalogue_evidence_extraction.extract_evidence(b"jpeg-bytes", "catalogue.jpg", "image/jpeg")
 
@@ -213,7 +213,7 @@ def test_vision_response_rejects_semantic_product_fields(monkeypatch):
 
 
 def test_vision_response_rejects_normalized_numeric_raw_cells(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
 
     def fake_vision(_content: bytes, *, media_type: str):
         assert media_type == "image/jpeg"
@@ -241,7 +241,7 @@ def test_vision_response_rejects_normalized_numeric_raw_cells(monkeypatch):
             )
         )
 
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
 
     result = catalogue_evidence_extraction.extract_evidence(b"jpeg-bytes", "catalogue.jpg", "image/jpeg")
 
@@ -393,9 +393,9 @@ _EVIDENCE_PAYLOAD = {
 
 
 def test_hybrid_page_with_only_page_number_still_uses_vision(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages([{"text": "3", "image": True}])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "hybrid.pdf", "application/pdf")
@@ -410,7 +410,7 @@ def test_hybrid_page_with_only_page_number_still_uses_vision(monkeypatch):
 
 
 def test_hybrid_page_with_short_footer_is_not_silently_completed_without_vision(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     content = _pdf_pages([{"text": "Page 1 of 3", "image": True}])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "footer.pdf", "application/pdf")
@@ -427,12 +427,12 @@ def test_hybrid_page_with_short_footer_is_not_silently_completed_without_vision(
 
 
 def test_short_but_meaningful_text_page_without_images_stays_text_only(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
 
     def forbidden_vision(*_a, **_k):
         raise AssertionError("text-only page must not call vision")
 
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", forbidden_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", forbidden_vision)
     content = _pdf_pages([{"text": "10447 Healthy Cuisine Chicken 82g HK$13.10", "image": False}])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "short.pdf", "application/pdf")
@@ -458,9 +458,9 @@ def test_garbled_or_unreliable_text_layer_is_classified_for_vision():
 
 
 def test_multi_page_mixture_of_text_scanned_and_hybrid_pages(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages(
         [
             {"text": "SKU | Description | Price\nA-1 | First Product | HK$1.00\nA-2 | Second Product | HK$2.00"},
@@ -482,9 +482,9 @@ def test_multi_page_mixture_of_text_scanned_and_hybrid_pages(monkeypatch):
 
 
 def test_empty_vision_array_without_outcome_fails_the_page(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, _ = _vision_stub([{"observations": []}])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages([{"text": None, "image": True}])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "empty.pdf", "application/pdf")
@@ -496,9 +496,9 @@ def test_empty_vision_array_without_outcome_fails_the_page(monkeypatch):
 
 
 def test_evidence_outcome_with_empty_array_is_malformed_not_empty_page(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, _ = _vision_stub([{"page_outcome": "evidence", "observations": []}])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
 
     result = catalogue_evidence_extraction.extract_evidence(b"jpeg-bytes", "catalogue.jpg", "image/jpeg")
 
@@ -507,9 +507,9 @@ def test_evidence_outcome_with_empty_array_is_malformed_not_empty_page(monkeypat
 
 
 def test_one_empty_vision_page_in_multipage_pdf_is_partial_not_complete(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, _ = _vision_stub([{"observations": []}])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages(
         [
             {"text": "SKU | Description | Price\nB-1 | Product One | HK$5.00\nB-2 | Product Two | HK$6.00"},
@@ -526,9 +526,9 @@ def test_one_empty_vision_page_in_multipage_pdf_is_partial_not_complete(monkeypa
 
 
 def test_explicit_no_catalogue_evidence_page_is_accounted_without_fake_observations(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, _ = _vision_stub([{"page_outcome": "no_catalogue_evidence", "observations": []}])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages([{"text": None, "image": True}])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "cover.pdf", "application/pdf")
@@ -541,10 +541,10 @@ def test_explicit_no_catalogue_evidence_page_is_accounted_without_fake_observati
 
 
 def test_no_catalogue_evidence_with_observations_is_malformed(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     payload = {"page_outcome": "no_catalogue_evidence", "observations": _EVIDENCE_PAYLOAD["observations"]}
     fake_vision, _ = _vision_stub([payload])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
 
     result = catalogue_evidence_extraction.extract_evidence(b"jpeg-bytes", "catalogue.jpg", "image/jpeg")
 
@@ -580,30 +580,32 @@ def test_vision_observation_identity_is_stable_across_reordered_retries():
     assert len(keys_a) == 3  # the duplicate row keeps a distinct ordinal identity
 
 
-def test_provider_failure_classification_uses_typed_sdk_exceptions():
-    import anthropic
-    import httpx
+def test_provider_failure_classification_reads_gemini_http_status():
+    # google-genai API errors carry the HTTP status on `.code`; classification
+    # keys off that (429/5xx retry, 401/403 config, other 4xx non-retryable).
+    class _ApiError(Exception):
+        def __init__(self, code):
+            super().__init__(f"gemini {code}")
+            self.code = code
 
-    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-
-    timeout = evidence_service._classify_provider_failure(anthropic.APITimeoutError(request=request))
-    assert timeout.retryable is True
-
-    rate_limited = evidence_service._classify_provider_failure(
-        anthropic.RateLimitError("rate limited", response=httpx.Response(429, request=request), body=None)
-    )
+    rate_limited = evidence_service._classify_provider_failure(_ApiError(429))
     assert rate_limited.retryable is True
+    assert rate_limited.code == "TRANSIENT_PROVIDER_ERROR"
 
-    unauthorized = evidence_service._classify_provider_failure(
-        anthropic.AuthenticationError("bad key", response=httpx.Response(401, request=request), body=None)
-    )
+    server = evidence_service._classify_provider_failure(_ApiError(503))
+    assert server.retryable is True
+
+    unauthorized = evidence_service._classify_provider_failure(_ApiError(401))
     assert unauthorized.retryable is False
     assert unauthorized.code == "EXTRACTION_CONFIGURATION_ERROR"
 
-    bad_request = evidence_service._classify_provider_failure(
-        anthropic.BadRequestError("schema violation", response=httpx.Response(400, request=request), body=None)
-    )
+    bad_request = evidence_service._classify_provider_failure(_ApiError(400))
     assert bad_request.retryable is False
+    assert bad_request.code == "PROVIDER_ERROR"
+
+    # Network-level failures have no HTTP status -> conservative message heuristic.
+    timeout = evidence_service._classify_provider_failure(TimeoutError("deadline exceeded / connection timeout"))
+    assert timeout.retryable is True
 
 
 # ── Stage 3 architectural boundary: extraction must not reach interpretation
@@ -669,23 +671,25 @@ def test_stage3_extraction_import_boundary():
     assert not hits, f"Stage 3 extraction closure reaches forbidden modules: {sorted(hits)}"
 
 
-def test_anthropic_is_reachable_only_through_the_stage3_provider_seam():
-    # The extraction ENVELOPE/adapter must not import anthropic directly; the
-    # provider client lives behind the seam inside catalogue_evidence_extraction.
+def test_vision_provider_is_reachable_only_through_the_stage3_provider_seam():
+    # The extraction ENVELOPE/adapter must not import the vision provider (Gemini)
+    # directly; the client lives behind the seam inside catalogue_evidence_extraction.
     adapter_closure = _import_closure(["orchestration.catalogue_extraction_adapter"])
     assert "services.catalogue_evidence_extraction" in adapter_closure
 
     backend_root = Path(__file__).resolve().parent.parent
     seam = (backend_root / "services" / "catalogue_evidence_extraction.py").read_text()
-    # anthropic is imported lazily inside the provider functions, never at module top level.
-    module_level = ast.parse(seam)
-    top_level_imports = {
-        alias.name
-        for node in module_level.body
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    assert "anthropic" not in top_level_imports, "provider client must stay behind the function-level seam"
+    tree = ast.parse(seam)
+    # No AI provider is imported at module top level — the client (google.genai)
+    # loads lazily inside the vision function only.
+    top_level = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top_level.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top_level.add(node.module.split(".")[0])
+    assert "google" not in top_level, "vision provider client must stay behind the function-level seam"
+    assert "anthropic" not in top_level
 
 
 # ── Fix 1 follow-up: typed page modes, decorative vs material images ────────
@@ -708,12 +712,12 @@ _RICH_TEXT = (
 
 
 def test_text_page_with_meaningful_lines_and_no_images_is_text_mode(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
 
     def forbidden_vision(*_a, **_k):
         raise AssertionError("text-mode page must not call vision")
 
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", forbidden_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", forbidden_vision)
     content = _pdf_pages([{"text": _RICH_TEXT}])
 
     decision = _first_page_decision(content)
@@ -726,12 +730,12 @@ def test_text_page_with_meaningful_lines_and_no_images_is_text_mode(monkeypatch)
 
 
 def test_text_page_with_tiny_decorative_logo_stays_text_only(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
 
     def forbidden_vision(*_a, **_k):
         raise AssertionError("decorative logo must not force vision on a complete text page")
 
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", forbidden_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", forbidden_vision)
     content = _pdf_pages([{"text": _RICH_TEXT, "image": True, "image_width": 64, "image_height": 64}])
 
     decision = _first_page_decision(content)
@@ -748,9 +752,9 @@ def test_text_page_with_tiny_decorative_logo_stays_text_only(monkeypatch):
 def test_rich_text_page_with_material_image_is_hybrid_and_calls_vision(monkeypatch):
     # Title + column header + footer + full-page image table: three or more
     # valid text lines must NOT mark the page complete from text alone.
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages([{"text": _RICH_TEXT, "image": True}])  # default: material scan-size image
 
     decision = _first_page_decision(content)
@@ -768,7 +772,7 @@ def test_rich_text_page_with_material_image_is_hybrid_and_calls_vision(monkeypat
 
 
 def test_rich_text_page_with_material_image_cannot_complete_without_vision(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     content = _pdf_pages([{"text": _RICH_TEXT, "image": True}])
 
     result = catalogue_evidence_extraction.extract_evidence(content, "hybrid-nokey.pdf", "application/pdf")
@@ -781,7 +785,7 @@ def test_rich_text_page_with_material_image_cannot_complete_without_vision(monke
 
 
 def test_image_with_unknown_dimensions_is_uncertain_and_requires_vision(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     # Build a page whose image XObject has no /Width//Height: coverage unknowable.
     writer = pypdf.PdfWriter()
     page = writer.add_blank_page(width=612, height=792)
@@ -813,7 +817,7 @@ def test_image_with_unknown_dimensions_is_uncertain_and_requires_vision(monkeypa
 
 
 def test_mid_size_image_is_treated_as_coverage_unknown(monkeypatch):
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     content = _pdf_pages([{"text": _RICH_TEXT, "image": True, "image_width": 450, "image_height": 450}])
 
     decision = _first_page_decision(content)
@@ -822,9 +826,9 @@ def test_mid_size_image_is_treated_as_coverage_unknown(monkeypatch):
 
 
 def test_mixed_document_decorative_hybrid_and_scanned_pages(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "configured-for-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
     fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_anthropic_vision", fake_vision)
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
     content = _pdf_pages(
         [
             {"text": _RICH_TEXT},                                                        # text-only
