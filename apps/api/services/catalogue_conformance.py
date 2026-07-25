@@ -405,7 +405,9 @@ def _compose_display_name(runtime_contract, lookup, fields: dict[str, Any]) -> s
         columns = list(contract_field.composed_from or ())
         if not columns:
             columns = [column for column in (contract_field.source_column, contract_field.source_path) if column]
-        for column in columns:
+        # Compose the name from the source columns in REVERSE declared order
+        # (Product Description -> Life Stage -> Product Range).
+        for column in reversed(columns):
             part = _english_segment(lookup(column))
             if part:
                 segments.append(part)

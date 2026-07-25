@@ -57,7 +57,7 @@ def test_real_gemini_bilingual_headers_map_through_the_contract():
     assert len(outcome.items) == 1
     fields = outcome.items[0].normalized_fields
     assert fields["supplier_sku"]["value"] == "10447"
-    assert fields["product_name"]["value"] == "Hill's - Science Plan - Adult - Chicken 82g"
+    assert fields["product_name"]["value"] == "Hill's - Chicken 82g - Adult - Science Plan"
     assert fields["brand"]["value"] == "Hill's"  # contract constant
     # Cost mapped despite the CJK side differing from the contract text.
     assert fields["cost"]["amount"] == "13.10"

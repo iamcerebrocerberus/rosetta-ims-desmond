@@ -319,7 +319,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert serving_contract.contract_version == "catalogue.serving_item.v1"
     assert serving_contract.review_status == ReviewStatus.APPROVED
     assert serving_contract.canonical_sku == "10447"
-    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken - 82g"
+    assert serving_contract.product_variant_name == "Hill's - Chicken - Adult - Science Diet - 82g"
     assert serving_contract.supplier_offering.supplier_sku == "10447"
     assert serving_contract.current_approved_cost.amount == Decimal("13.10")
     assert serving_contract.current_approved_cost.currency == "HKD"
@@ -370,17 +370,18 @@ def _submit(client: TestClient, source_bytes: bytes, *, idempotency_key: str):
 
 # Two vision observations, each a map of Hill's source-column heading -> printed
 # cell value. Conformance maps these named cells through the supplier contract:
-#   - row 1 is a complete, resolvable Hill's row (SKU 10447). Its composed
-#     product name (Product Range + Product Description, Life Stage omitted)
-#     joins to exactly "Hill's Healthy Cuisine Chicken 82g", matching the seeded
-#     product variant so approval/publish resolve it.
+#   - row 1 is a complete, resolvable Hill's row (SKU 10447). Its normalized name
+#     composes from the source columns in reverse (Product Description -> Life
+#     Stage -> Product Range), brand-prefixed and size-suffixed, to
+#     "Hill's - Chicken - Adult - Science Diet - 82g".
 #   - row 2 quotes "By Quote" for the wholesale price, so cost cannot be resolved
 #     and the row raises the blocking STAGING_COST_BASIS_UNRESOLVED issue.
 _VISION_ROWS = [
     {
         "Product Code / 產品編號": "10447",
-        "Product Range / 產品系列": "Hill's Healthy Cuisine Chicken",
-        "Product Description / 產品名稱": "82g",
+        "Product Range / 產品系列": "Science Diet",
+        "Life Stage / 生命階段": "Adult",
+        "Product Description / 產品名稱": "Chicken",
         "Size / 重量": "82g",
         "Gross Wholesale Price / 每箱·罐": "13.10",
         "Order Multiple / 訂貨單位": "1",
