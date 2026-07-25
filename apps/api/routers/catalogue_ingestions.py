@@ -133,6 +133,18 @@ def submit_catalogue_ingestion(
         )
     return _submission_response(result)
 
+@router.get(
+    "/ingestions/run_ids",
+    response_model=list[CatalogueIngestionStatusResponse],
+)
+def get_catalogue_ingestions_run_ids(
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_capability("catalogue_onboard")),
+):
+    service = CatalogueSubmissionService(db)
+    runs = service.list()
+    return [_status_response(run) for run in runs]
+
 
 @router.get(
     "/ingestions/{run_uuid}",

@@ -238,13 +238,8 @@ class CatalogueSubmissionService:
             if stored:
                 self._cleanup_new_file(stored)
             raise SubmissionPersistenceError("Submission could not be persisted") from exc
-
-    def get_status(self, run_uuid: UUID) -> CatalogueIngestionStatus:
-        """Return a safe typed status payload for one ingestion run."""
-
-        run = self.db.query(models.IngestionRun).filter_by(run_uuid=str(run_uuid)).first()
-        if run is None:
-            raise SubmissionNotFoundError(f"Ingestion run {run_uuid} was not found")
+        
+    def _get_status(self, run: models.IngestionRun) -> CatalogueIngestionStatus:
         source = run.pipeline_source_document
         if source is None and run.catalogue_source_document_id:
             source = self.db.get(models.CatalogueSourceDocument, run.catalogue_source_document_id)
@@ -266,6 +261,20 @@ class CatalogueSubmissionService:
             metrics=metrics,
             error_summary=error_summary,
         )
+        
+    def list(self) -> list[CatalogueIngestionStatus]: 
+        """Returns a list of safe typed status payload for all current ingestion runs and their statuses"""
+        runs = self.db.query(models.IngestionRun).all()
+        run_statuses = [self._get_status(run) for run in runs]
+        return run_statuses 
+
+    def get_status(self, run_uuid: UUID) -> CatalogueIngestionStatus:
+        """Return a safe typed status payload for one ingestion run."""
+
+        run = self.db.query(models.IngestionRun).filter_by(run_uuid=str(run_uuid)).first()
+        if run is None:
+            raise SubmissionNotFoundError(f"Ingestion run {run_uuid} was not found")
+        return self._get_status(run)
 
     def _supplier(self, supplier_id: int) -> models.Supplier:
         supplier = self.db.query(models.Supplier).filter_by(id=supplier_id).first()
