@@ -21,48 +21,6 @@ from services import catalogue_evidence_extraction
 from services.catalogue_evidence_extraction import ExtractionStatus
 
 
-def test_pdf_text_extraction_is_verbatim_source_located_and_keeps_duplicates(monkeypatch):
-    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
-    content = _pdf_with_pages(
-        [
-            "SKU | Description | Wholesale\n"
-            "10447 | Healthy Cuisine Chicken 82g | HK$13.10\n"
-            "10447 | Healthy Cuisine Chicken 82g | HK$13.10"
-        ]
-    )
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "hills.pdf", "application/pdf")
-
-    assert result.status == ExtractionStatus.COMPLETE
-    assert result.source_format == SourceFormat.PDF
-    assert result.units_attempted == result.units_completed == 1
-    assert [item.raw_text for item in result.observations] == [
-        "SKU | Description | Wholesale",
-        "10447 | Healthy Cuisine Chicken 82g | HK$13.10",
-        "10447 | Healthy Cuisine Chicken 82g | HK$13.10",
-    ]
-    assert result.observations[1].observation_key == "page:1:line:2"
-    assert result.observations[1].source_location.page_number == 1
-    assert result.observations[1].extraction_method == ExtractionMethod.PDF_TEXT
-    assert result.observations[1].provider == "pypdf"
-    assert "cost_price" not in result.observations[1].model_dump()
-
-
-def test_pdf_reports_partial_extraction_when_one_page_needs_unconfigured_vision(monkeypatch):
-    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
-    content = _pdf_with_pages(["10447 | Product | HK$13.10", None])
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "mixed.pdf", "application/pdf")
-
-    assert result.status == ExtractionStatus.PARTIAL
-    assert result.units_attempted == 2
-    assert result.units_completed == 1
-    assert len(result.observations) == 1
-    assert result.errors[0].code == "EXTRACTION_CONFIGURATION_ERROR"
-    assert result.errors[0].unit_key == "page:2"
-    assert result.errors[0].provider == "google"
-
-
 def test_scanned_pdf_failure_is_operational_error_not_fake_catalogue_row(monkeypatch):
     for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
 
@@ -392,55 +350,6 @@ _EVIDENCE_PAYLOAD = {
 }
 
 
-def test_hybrid_page_with_only_page_number_still_uses_vision(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-    fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
-    content = _pdf_pages([{"text": "3", "image": True}])
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "hybrid.pdf", "application/pdf")
-
-    assert calls["count"] == 1, "sparse incidental text must not suppress vision"
-    assert result.status == ExtractionStatus.COMPLETE
-    vision_texts = [o.raw_text for o in result.observations if o.extraction_method == ExtractionMethod.MODEL_VISION]
-    assert vision_texts == ["SCANNED-1 | Scanned Product 500g | HK$99.00"]
-    text_lines = [o.raw_text for o in result.observations if o.extraction_method == ExtractionMethod.PDF_TEXT]
-    assert text_lines == ["3"]  # incidental text is still verbatim evidence
-    assert any("hybrid" in warning for warning in result.warnings)
-
-
-def test_hybrid_page_with_short_footer_is_not_silently_completed_without_vision(monkeypatch):
-    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
-    content = _pdf_pages([{"text": "Page 1 of 3", "image": True}])
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "footer.pdf", "application/pdf")
-
-    # The footer is kept as verbatim evidence, but the image-bearing page must
-    # NOT be marked completed without vision — so the page surfaces as
-    # incomplete (units_completed == 0) with a config error, never as a
-    # silently completed page missing its image-based rows.
-    assert result.status == ExtractionStatus.PARTIAL
-    assert result.units_completed == 0
-    assert result.errors[0].code == "EXTRACTION_CONFIGURATION_ERROR"
-    assert result.errors[0].unit_key == "page:1"
-    assert [o.raw_text for o in result.observations] == ["Page 1 of 3"]
-
-
-def test_short_but_meaningful_text_page_without_images_stays_text_only(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-
-    def forbidden_vision(*_a, **_k):
-        raise AssertionError("text-only page must not call vision")
-
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", forbidden_vision)
-    content = _pdf_pages([{"text": "10447 Healthy Cuisine Chicken 82g HK$13.10", "image": False}])
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "short.pdf", "application/pdf")
-
-    assert result.status == ExtractionStatus.COMPLETE
-    assert [o.raw_text for o in result.observations] == ["10447 Healthy Cuisine Chicken 82g HK$13.10"]
-
-
 def test_garbled_or_unreliable_text_layer_is_classified_for_vision():
     # A text layer dominated by unexpected code points is unreliable and must
     # route to vision with the text discarded — tested directly on the page
@@ -455,30 +364,6 @@ def test_garbled_or_unreliable_text_layer_is_classified_for_vision():
     empty_decision = evidence_service._classify_pdf_page(None, "   \n  ")
     assert empty_decision.keep_text is False
     assert empty_decision.vision_required is True
-
-
-def test_multi_page_mixture_of_text_scanned_and_hybrid_pages(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-    fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
-    content = _pdf_pages(
-        [
-            {"text": "SKU | Description | Price\nA-1 | First Product | HK$1.00\nA-2 | Second Product | HK$2.00"},
-            {"text": None, "image": True},
-            {"text": "7", "image": True},
-        ]
-    )
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "mixture.pdf", "application/pdf")
-
-    assert result.status == ExtractionStatus.COMPLETE
-    assert result.units_attempted == result.units_completed == 3
-    assert calls["count"] == 2  # scanned + hybrid pages
-    by_method: dict = {}
-    for observation in result.observations:
-        by_method[observation.extraction_method] = by_method.get(observation.extraction_method, 0) + 1
-    assert by_method[ExtractionMethod.PDF_TEXT] == 4  # 3 lines + incidental "7"
-    assert by_method[ExtractionMethod.MODEL_VISION] == 2
 
 
 def test_empty_vision_array_without_outcome_fails_the_page(monkeypatch):
@@ -504,25 +389,6 @@ def test_evidence_outcome_with_empty_array_is_malformed_not_empty_page(monkeypat
 
     assert result.status == ExtractionStatus.FAILED
     assert result.errors[0].code == "MALFORMED_PROVIDER_RESPONSE"
-
-
-def test_one_empty_vision_page_in_multipage_pdf_is_partial_not_complete(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-    fake_vision, _ = _vision_stub([{"observations": []}])
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
-    content = _pdf_pages(
-        [
-            {"text": "SKU | Description | Price\nB-1 | Product One | HK$5.00\nB-2 | Product Two | HK$6.00"},
-            {"text": None, "image": True},
-        ]
-    )
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "partial.pdf", "application/pdf")
-
-    assert result.status == ExtractionStatus.PARTIAL
-    assert result.units_attempted == 2
-    assert result.units_completed == 1
-    assert result.errors[0].unit_key == "page:2"
 
 
 def test_explicit_no_catalogue_evidence_page_is_accounted_without_fake_observations(monkeypatch):
@@ -660,7 +526,7 @@ def test_stage3_extraction_import_boundary():
         ]
     )
     forbidden = {
-        "services.catalogue_interpretation",       # Intermediate layer
+        "services.catalogue_conformance",       # Intermediate layer
         "services.extraction_service",             # legacy semantic extraction
         "services.catalogue_pipeline_stages",      # staging/validation/mastering/serving services
         "services.tagging_service",
@@ -711,79 +577,6 @@ _RICH_TEXT = (
 )
 
 
-def test_text_page_with_meaningful_lines_and_no_images_is_text_mode(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-
-    def forbidden_vision(*_a, **_k):
-        raise AssertionError("text-mode page must not call vision")
-
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", forbidden_vision)
-    content = _pdf_pages([{"text": _RICH_TEXT}])
-
-    decision = _first_page_decision(content)
-    assert decision.mode == PdfPageMode.TEXT
-    assert decision.reason == "RELIABLE_TEXT_NO_MATERIAL_IMAGES"
-    assert decision.vision_required is False
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "text.pdf", "application/pdf")
-    assert result.status == ExtractionStatus.COMPLETE
-
-
-def test_text_page_with_tiny_decorative_logo_stays_text_only(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-
-    def forbidden_vision(*_a, **_k):
-        raise AssertionError("decorative logo must not force vision on a complete text page")
-
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", forbidden_vision)
-    content = _pdf_pages([{"text": _RICH_TEXT, "image": True, "image_width": 64, "image_height": 64}])
-
-    decision = _first_page_decision(content)
-    assert decision.mode == PdfPageMode.TEXT
-    assert decision.reason == "RELIABLE_TEXT_NO_MATERIAL_IMAGES"
-    assert decision.metrics["decorative_images"] == 1
-    assert decision.metrics["material_images"] == 0
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "logo.pdf", "application/pdf")
-    assert result.status == ExtractionStatus.COMPLETE
-    assert all(o.extraction_method == ExtractionMethod.PDF_TEXT for o in result.observations)
-
-
-def test_rich_text_page_with_material_image_is_hybrid_and_calls_vision(monkeypatch):
-    # Title + column header + footer + full-page image table: three or more
-    # valid text lines must NOT mark the page complete from text alone.
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-    fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
-    content = _pdf_pages([{"text": _RICH_TEXT, "image": True}])  # default: material scan-size image
-
-    decision = _first_page_decision(content)
-    assert decision.mode == PdfPageMode.HYBRID
-    assert decision.reason == "TEXT_WITH_MATERIAL_IMAGES"
-    assert decision.keep_text is True and decision.vision_required is True
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "hybrid-rich.pdf", "application/pdf")
-
-    assert calls["count"] == 1, "three text lines must not suppress vision on a material-image page"
-    assert result.status == ExtractionStatus.COMPLETE
-    methods = {o.extraction_method for o in result.observations}
-    assert methods == {ExtractionMethod.PDF_TEXT, ExtractionMethod.MODEL_VISION}
-    assert any("hybrid" in warning for warning in result.warnings)
-
-
-def test_rich_text_page_with_material_image_cannot_complete_without_vision(monkeypatch):
-    for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
-    content = _pdf_pages([{"text": _RICH_TEXT, "image": True}])
-
-    result = catalogue_evidence_extraction.extract_evidence(content, "hybrid-nokey.pdf", "application/pdf")
-
-    assert result.status == ExtractionStatus.PARTIAL
-    assert result.units_completed == 0
-    assert result.errors[0].code == "EXTRACTION_CONFIGURATION_ERROR"
-    # Text evidence is retained, but the page is honestly not complete.
-    assert [o.raw_text for o in result.observations] == _RICH_TEXT.splitlines()
-
-
 def test_image_with_unknown_dimensions_is_uncertain_and_requires_vision(monkeypatch):
     for _k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"): monkeypatch.delenv(_k, raising=False)
     # Build a page whose image XObject has no /Width//Height: coverage unknowable.
@@ -825,25 +618,104 @@ def test_mid_size_image_is_treated_as_coverage_unknown(monkeypatch):
     assert decision.reason == "IMAGE_COVERAGE_UNKNOWN"
 
 
-def test_mixed_document_decorative_hybrid_and_scanned_pages(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
-    fake_vision, calls = _vision_stub([_EVIDENCE_PAYLOAD])
-    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
-    content = _pdf_pages(
-        [
-            {"text": _RICH_TEXT},                                                        # text-only
-            {"text": _RICH_TEXT, "image": True, "image_width": 64, "image_height": 64},  # decorative logo
-            {"text": _RICH_TEXT, "image": True},                                         # hybrid (material)
-            {"text": None, "image": True},                                               # scanned
-        ]
+# ── PDF evidence now routes every page to the vision provider ────────────────
+# The PDF text layer is no longer used as evidence: every page is sent to the
+# vision provider so tabular pages yield column-labeled cells the supplier
+# contract can map deterministically. These tests stub the provider seam and
+# never call real Gemini.
+
+
+def _vision_envelope(rows: list[dict[str, str]]) -> str:
+    """Typed vision envelope with column-labeled raw cells (rows: column -> value)."""
+
+    return json.dumps(
+        {
+            "page_outcome": "evidence",
+            "observations": [
+                {
+                    "raw_text": None,
+                    "raw_cells": [
+                        {
+                            "cell_reference": None,
+                            "row_number": None,
+                            "column_name": column,
+                            "column_index": index,
+                            "raw_value": value,
+                        }
+                        for index, (column, value) in enumerate(row.items(), start=1)
+                    ],
+                    "bounding_box": {"x": 0, "y": 0, "width": 1, "height": 1, "unit": "px"},
+                    "confidence": "0.95",
+                }
+                for row in rows
+            ],
+        }
     )
 
-    result = catalogue_evidence_extraction.extract_evidence(content, "mixed-modes.pdf", "application/pdf")
 
-    assert calls["count"] == 2  # hybrid + scanned only
+def test_pdf_pages_are_extracted_via_vision_into_column_labeled_cells(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
+    seen: dict[str, str] = {}
+
+    def fake_vision(content: bytes, *, media_type: str):
+        seen["media_type"] = media_type
+        return evidence_service._VisionResponse(
+            text=_vision_envelope([{"Product Code": "10447", "Size": "82g"}]),
+            request_id="msg_pdf_1",
+        )
+
+    monkeypatch.setattr(evidence_service, "_call_gemini_vision", fake_vision)
+    content = _pdf_with_pages(["Hills Catalogue"])
+
+    result = catalogue_evidence_extraction.extract_evidence(content, "hills.pdf", "application/pdf")
+
     assert result.status == ExtractionStatus.COMPLETE
-    assert result.units_attempted == result.units_completed == 4
-    vision_count = sum(1 for o in result.observations if o.extraction_method == ExtractionMethod.MODEL_VISION)
-    text_count = sum(1 for o in result.observations if o.extraction_method == ExtractionMethod.PDF_TEXT)
-    assert vision_count == 2
-    assert text_count == 12  # 4 rich-text lines on each of three text-bearing pages
+    assert result.source_format == SourceFormat.PDF
+    assert seen["media_type"] == "application/pdf"  # the page is sent as PDF bytes
+    assert result.units_attempted == result.units_completed == 1
+    assert len(result.observations) == 1
+    observation = result.observations[0]
+    assert observation.extraction_method == ExtractionMethod.MODEL_VISION
+    assert observation.provider == "google"
+    assert observation.provider_request_id == "msg_pdf_1"
+    assert observation.source_location.page_number == 1
+    assert observation.confidence == Decimal("0.95")
+    assert [(cell.column_name, cell.raw_value) for cell in observation.raw_cells] == [
+        ("Product Code", "10447"),
+        ("Size", "82g"),
+    ]
+
+
+def test_pdf_without_configured_vision_provider_is_a_configuration_error(monkeypatch):
+    for _key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(_key, raising=False)
+    content = _pdf_with_pages(["Product Code | Size\n10447 | 82g"])
+
+    result = catalogue_evidence_extraction.extract_evidence(content, "hills.pdf", "application/pdf")
+
+    assert result.status == ExtractionStatus.FAILED
+    assert result.observations == ()
+    assert result.errors[0].code == "EXTRACTION_CONFIGURATION_ERROR"
+    assert result.errors[0].provider == "google"
+    assert result.errors[0].message == "PDF evidence extraction requires a configured vision provider"
+
+
+def test_csv_cells_carry_column_name_from_header_row():
+    content = (
+        "Code,Description,Wholesale\r\n"
+        "10447,Healthy Cuisine 82g,HK$13.10\r\n"
+    ).encode()
+
+    result = catalogue_evidence_extraction.extract_evidence(content, "catalogue.csv", "text/csv")
+
+    assert result.status == ExtractionStatus.COMPLETE
+    # The first non-empty row is recognised as the header and its labels are
+    # attached to every data cell by column, so the supplier contract can map
+    # each raw value to its printed column heading.
+    assert [cell.column_name for cell in result.observations[0].raw_cells] == ["Code", "Description", "Wholesale"]
+    data_cells = result.observations[1].raw_cells
+    assert [(cell.column_name, cell.raw_value) for cell in data_cells] == [
+        ("Code", "10447"),
+        ("Description", "Healthy Cuisine 82g"),
+        ("Wholesale", "HK$13.10"),
+    ]

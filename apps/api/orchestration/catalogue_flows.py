@@ -11,13 +11,13 @@ from prefect import flow
 from services import catalogue_pipeline_stages as stages
 
 from .catalogue_tasks import (
-    build_interpreted_claims_task,
+    build_normalized_rows_task,
     capture_extracted_evidence_task,
-    evaluate_interpreted_claims_task,
+    evaluate_normalized_rows_task,
     extract_source_evidence_task,
     failure_result,
     finalize_run_task,
-    interpret_raw_evidence_task,
+    normalize_evidence_task,
     load_and_claim_run_task,
     log_flow_result,
     prepare_eligible_candidates_task,
@@ -60,21 +60,24 @@ def catalogue_ingestion_flow(*, ingestion_run_id: UUID) -> CatalogueFlowResult:
         return failure_result(run_id, exc)
 
     try:
-        # Raw stage completes (file preserved, verified and audited) before any
-        # stage that tries to understand the file becomes reachable.
+        # RAW (file preserved, verified, audited) completes before any stage
+        # that reads the file. STAGING then extracts verbatim evidence and
+        # deterministically conforms it to normalized rows via the supplier
+        # contract. INTERMEDIATE (validate + master) is business interpretation
+        # of those normalized rows.
         raw = raw_stage_task(run_id)
         runtime_contract = resolve_recorded_contract_task(run_id)
         evidence = extract_source_evidence_task(run_id)
         raw_ids, raw_created, raw_reused = capture_extracted_evidence_task(raw.run_identity, evidence.observations)
-        interpretation = interpret_raw_evidence_task(raw_ids, runtime_contract)
-        staging_ids, staging_created, staging_reused = build_interpreted_claims_task(interpretation)
-        validation_created, validation_reused, blocking_count = evaluate_interpreted_claims_task(staging_ids)
+        conformance = normalize_evidence_task(raw_ids, runtime_contract)
+        staging_ids, staging_created, staging_reused = build_normalized_rows_task(conformance)
+        validation_created, validation_reused, blocking_count = evaluate_normalized_rows_task(staging_ids)
         candidate_created, candidate_reused, candidate_warnings = prepare_eligible_candidates_task(
             raw.run_identity,
             staging_ids,
-            interpretation,
+            conformance,
         )
-        warnings = tuple(evidence.warnings) + tuple(interpretation.warnings) + tuple(candidate_warnings)
+        warnings = tuple(evidence.warnings) + tuple(conformance.warnings) + tuple(candidate_warnings)
         if evidence.rejected_units or blocking_count or validation_created or validation_reused or warnings:
             terminal_status = "completed_with_warnings"
         else:
@@ -92,9 +95,9 @@ def catalogue_ingestion_flow(*, ingestion_run_id: UUID) -> CatalogueFlowResult:
             mastering_candidates_created=candidate_created,
             mastering_candidates_reused=candidate_reused,
             rows_rejected=evidence.rejected_units,
-            rows_interpreted=len(interpretation.items),
-            rows_skipped_non_catalogue=interpretation.skipped_count,
-            interpretation_degraded=bool(interpretation.metadata.get("degraded")),
+            rows_interpreted=len(conformance.items),
+            rows_skipped_non_catalogue=conformance.skipped_count,
+            interpretation_degraded=bool(conformance.metadata.get("degraded")),
             warnings=warnings,
             human_review_required=True,
         )

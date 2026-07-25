@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import tempfile
 from io import BytesIO
@@ -35,8 +36,9 @@ from orchestration.catalogue_flows import catalogue_ingestion_flow  # noqa: E402
 from orchestration.catalogue_raw_stage import complete_raw_stage  # noqa: E402
 from orchestration.catalogue_source_loader import load_and_verify_source_asset  # noqa: E402
 from orchestration.catalogue_types import RawStageResult, SourceVerificationError  # noqa: E402
+from schemas.catalogue_pipeline.enums import ExtractionMethod  # noqa: E402
 from services import catalogue_evidence_extraction  # noqa: E402
-from services import catalogue_interpretation  # noqa: E402
+from services import catalogue_conformance  # noqa: E402
 from services import catalogue_pipeline_stages as stages  # noqa: E402
 from services import extraction_service  # noqa: E402
 from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueSubmissionService  # noqa: E402
@@ -75,12 +77,11 @@ def forbid_understanding(monkeypatch):
     monkeypatch.setattr(anthropic, "Anthropic", _forbidden("anthropic.Anthropic"))
     monkeypatch.setattr(catalogue_evidence_extraction, "extract_evidence", _forbidden("evidence extraction"))
     monkeypatch.setattr(catalogue_evidence_extraction, "_call_gemini_vision", _forbidden("vision OCR"))
-    monkeypatch.setattr(catalogue_interpretation, "interpret_observations", _forbidden("interpretation"))
-    monkeypatch.setattr(catalogue_interpretation, "_model_interpret_rows", _forbidden("model interpretation"))
+    monkeypatch.setattr(catalogue_conformance, "conform_observations", _forbidden("conformance"))
     monkeypatch.setattr(extraction_service, "extract", _forbidden("legacy extraction"))
     monkeypatch.setattr(pypdf.PageObject, "extract_text", _forbidden("PDF text extraction"))
     monkeypatch.setattr(stages.ExtractedEvidenceService, "capture", _forbidden("raw observation persistence"))
-    monkeypatch.setattr(stages.InterpretedClaimService, "build_item", _forbidden("staging persistence"))
+    monkeypatch.setattr(stages.NormalizedRowService, "build_item", _forbidden("staging persistence"))
     monkeypatch.setattr(stages.MasteringService, "prepare_candidate", _forbidden("mastering persistence"))
 
 
@@ -96,8 +97,8 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueInterpretedClaimEvidence,
-        models.CatalogueInterpretedClaim,
+        models.CatalogueNormalizedRowEvidence,
+        models.CatalogueNormalizedRow,
         models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
@@ -223,7 +224,7 @@ def test_raw_stage_preserves_original_and_persists_metadata(db, forbid_understan
     assert source.raw_stage_status == "completed"
     assert source.raw_stage_completed_at is not None
     assert db.query(models.CatalogueExtractedEvidence).count() == 0
-    assert db.query(models.CatalogueInterpretedClaim).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
 
 
 def test_raw_stage_is_idempotent(db, forbid_understanding):
@@ -302,9 +303,9 @@ def test_flow_never_reaches_extraction_when_raw_stage_fails(db, monkeypatch):
         lambda *a, **k: pytest.fail("extraction must not run after raw-stage failure"),
     )
     monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda *a, **k: pytest.fail("interpretation must not run after raw-stage failure"),
+        catalogue_conformance,
+        "conform_observations",
+        lambda *a, **k: pytest.fail("conformance must not run after raw-stage failure"),
     )
     submitted = _submit(db, _text_pdf_bytes(["row one"]))
     _stored_path(db, submitted.ingestion_run_id).write_bytes(b"%PDF-1.4\nchanged")
@@ -318,12 +319,42 @@ def test_flow_never_reaches_extraction_when_raw_stage_fails(db, monkeypatch):
     assert "checksum" in run.error_summary
     assert _source_row(db, submitted.ingestion_run_id).raw_stage_status == "failed"
     assert db.query(models.CatalogueExtractedEvidence).count() == 0
-    assert db.query(models.CatalogueInterpretedClaim).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
 
 
-def test_extraction_consumes_durable_reference_after_raw_completes(db):
-    line = "10447 Healthy Cuisine Chicken 82g HK$13.10"
-    submitted = _submit(db, _text_pdf_bytes([line]))
+def test_extraction_consumes_durable_reference_after_raw_completes(db, monkeypatch):
+    # PDF extraction routes to the vision provider (stubbed here) to produce
+    # column-labeled cells; the point of this test is that extraction reloads
+    # the DURABLE stored original, not any in-memory raw-stage object.
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        catalogue_evidence_extraction,
+        "_call_gemini_vision",
+        lambda content, *, media_type: catalogue_evidence_extraction._VisionResponse(
+            text=json.dumps(
+                {
+                    "page_outcome": "evidence",
+                    "observations": [
+                        {
+                            "raw_text": None,
+                            "raw_cells": [
+                                {
+                                    "cell_reference": None,
+                                    "row_number": None,
+                                    "column_name": "Product Code / 產品編號",
+                                    "column_index": 1,
+                                    "raw_value": "10447",
+                                }
+                            ],
+                            "bounding_box": {"x": 0, "y": 0, "width": 1, "height": 1, "unit": "px"},
+                            "confidence": "0.95",
+                        }
+                    ],
+                }
+            )
+        ),
+    )
+    submitted = _submit(db, _text_pdf_bytes(["10447 Healthy Cuisine Chicken 82g HK$13.10"]))
 
     raw = complete_raw_stage(db, ingestion_run_id=submitted.ingestion_run_id)
     assert raw.status == "completed"
@@ -333,8 +364,8 @@ def test_extraction_consumes_durable_reference_after_raw_completes(db):
     outcome = extract_source_evidence(asset)
 
     assert len(outcome.observations) == 1
-    assert outcome.observations[0].raw_text == line
-    assert outcome.observations[0].observation_key == "page:1:line:1"
+    assert outcome.observations[0].extraction_method == ExtractionMethod.MODEL_VISION
+    assert outcome.observations[0].raw_cells[0].raw_value == "10447"
 
 
 def test_raw_stage_appends_one_completed_attempt_per_execution(db, forbid_understanding):
@@ -448,7 +479,7 @@ def test_raw_stage_module_import_boundary():
         "PIL",
         "services.extraction_service",
         "services.catalogue_evidence_extraction",
-        "services.catalogue_interpretation",
+        "services.catalogue_conformance",
         "services.tagging_service",
         "services.catalogue_pipeline_stages",
     )

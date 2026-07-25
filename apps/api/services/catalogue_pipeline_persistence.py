@@ -20,7 +20,7 @@ from schemas.catalogue_pipeline import (
     MasteringCandidateV1,
     ExtractedEvidenceV1,
     ServingItemV1,
-    InterpretedClaimV1,
+    NormalizedRowV1,
     ValidationIssueV1,
 )
 from schemas.catalogue_pipeline.common import MbbTerm, PackagingConfiguration, Quantity, UnitOfMeasure
@@ -107,17 +107,17 @@ def extracted_evidence_to_contract(row: models.CatalogueExtractedEvidence) -> Ex
     )
 
 
-def persist_interpreted_claim(db: Session, contract: InterpretedClaimV1) -> models.CatalogueInterpretedClaim:
+def persist_normalized_row(db: Session, contract: NormalizedRowV1) -> models.CatalogueNormalizedRow:
     """Persist a interpreted claim and its evidence lineage."""
 
-    existing = _interpreted_claim(db, contract.catalogue_item_id)
+    existing = _normalized_row(db, contract.catalogue_item_id)
     if existing is not None:
         return existing
 
     observations = _require_extracted_evidences(db, contract.raw_observation_ids)
     _assert_observations_match_trace(observations, str(contract.trace.ingestion_run_id), str(contract.trace.supplier_catalogue_id))
 
-    row = models.CatalogueInterpretedClaim(
+    row = models.CatalogueNormalizedRow(
         catalogue_item_uuid=str(contract.catalogue_item_id),
         contract_version=contract.contract_version,
         ingestion_run_uuid=str(contract.trace.ingestion_run_id),
@@ -126,7 +126,7 @@ def persist_interpreted_claim(db: Session, contract: InterpretedClaimV1) -> mode
         extraction_profile_id=contract.trace.extraction_profile.profile_id,
         extraction_profile_version=contract.trace.extraction_profile.profile_version,
         raw_fields_json=_json_dumps(contract.raw_fields.model_dump(mode="json")),
-        proposed_fields_json=_json_dumps(contract.proposed_fields.model_dump(mode="json")),
+        normalized_fields_json=_json_dumps(contract.normalized_fields.model_dump(mode="json")),
         review_requirement=contract.review_requirement.value,
         stage_status="NEEDS_REVIEW" if contract.review_requirement.value in {"REQUIRED", "BLOCKING"} else "PROPOSED",
         validation_issue_ids_json=_json_dumps([str(item) for item in contract.validation_issue_ids]),
@@ -137,7 +137,7 @@ def persist_interpreted_claim(db: Session, contract: InterpretedClaimV1) -> mode
     db.flush()
     for index, observation in enumerate(observations):
         db.add(
-            models.CatalogueInterpretedClaimEvidence(
+            models.CatalogueNormalizedRowEvidence(
                 staging_item_id=row.id,
                 raw_observation_id=observation.id,
                 raw_observation_uuid=observation.raw_observation_uuid,
@@ -148,11 +148,11 @@ def persist_interpreted_claim(db: Session, contract: InterpretedClaimV1) -> mode
     return row
 
 
-def interpreted_claim_to_contract(row: models.CatalogueInterpretedClaim) -> InterpretedClaimV1:
+def normalized_row_to_contract(row: models.CatalogueNormalizedRow) -> NormalizedRowV1:
     """Reconstruct a interpreted claim contract from persistence."""
 
     raw_ids = [link.raw_observation_uuid for link in sorted(row.raw_observation_links, key=lambda item: item.sort_order)]
-    return InterpretedClaimV1.model_validate(
+    return NormalizedRowV1.model_validate(
         {
             "contract_version": row.contract_version,
             "trace": {
@@ -167,7 +167,7 @@ def interpreted_claim_to_contract(row: models.CatalogueInterpretedClaim) -> Inte
             "catalogue_item_id": row.catalogue_item_uuid,
             "raw_observation_ids": raw_ids,
             "raw_fields": _json_loads(row.raw_fields_json),
-            "proposed_fields": _json_loads(row.proposed_fields_json),
+            "normalized_fields": _json_loads(row.normalized_fields_json),
             "review_requirement": row.review_requirement,
             "validation_issue_ids": _json_loads(row.validation_issue_ids_json) or [],
             "created_at": row.created_at,
@@ -245,7 +245,7 @@ def persist_mastering_candidate(db: Session, contract: MasteringCandidateV1) -> 
     if existing is not None:
         return existing
 
-    staging = _interpreted_claim(db, contract.catalogue_item_id)
+    staging = _normalized_row(db, contract.catalogue_item_id)
     if staging is None:
         raise CatalogueLineageError(f"Interpreted claim {contract.catalogue_item_id} does not exist")
     if staging.ingestion_run_uuid != str(contract.trace.ingestion_run_id):
@@ -606,8 +606,8 @@ def _extracted_evidence(db: Session, raw_observation_id: UUID):
     return db.query(models.CatalogueExtractedEvidence).filter_by(raw_observation_uuid=str(raw_observation_id)).first()
 
 
-def _interpreted_claim(db: Session, catalogue_item_id: UUID):
-    return db.query(models.CatalogueInterpretedClaim).filter_by(catalogue_item_uuid=str(catalogue_item_id)).first()
+def _normalized_row(db: Session, catalogue_item_id: UUID):
+    return db.query(models.CatalogueNormalizedRow).filter_by(catalogue_item_uuid=str(catalogue_item_id)).first()
 
 
 def _validation_issue(db: Session, validation_issue_id: UUID):

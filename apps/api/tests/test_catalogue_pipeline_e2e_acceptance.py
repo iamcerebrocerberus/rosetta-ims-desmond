@@ -30,8 +30,8 @@ from fastapi.testclient import TestClient  # noqa: E402
 from orchestration.catalogue_flows import catalogue_ingestion_flow  # noqa: E402
 from orchestration.catalogue_run_lifecycle import claim_queued_run  # noqa: E402
 from orchestration.catalogue_types import TerminalRunReplay  # noqa: E402
-from schemas.catalogue_pipeline.enums import ReviewStatus  # noqa: E402
-from services import catalogue_interpretation  # noqa: E402
+from schemas.catalogue_pipeline.enums import ExtractionMethod, ReviewStatus  # noqa: E402
+from services import catalogue_evidence_extraction as extraction  # noqa: E402
 from services import catalogue_pipeline_persistence as persistence  # noqa: E402
 from services import catalogue_pipeline_stages as stages  # noqa: E402
 from services import extraction_service, tagging_service  # noqa: E402
@@ -104,8 +104,6 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     monkeypatch,
 ):
     source_bytes = _pdf_bytes()
-    expected_rows, _ = _acceptance_rows(b"", "fixture.pdf", "application/pdf")
-    _assert_rows_grounded_on_pdf_page(source_bytes, expected_rows, page_number=1)
 
     first_submission = _submit(client, source_bytes, idempotency_key="cis104-submit")
     assert first_submission.status_code == 202, first_submission.text
@@ -128,7 +126,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert db.query(models.CatalogueImport).count() == 1
     assert db.query(models.CatalogueSourceDocument).count() == 1
     assert db.query(models.CatalogueExtractedEvidence).count() == 0
-    assert db.query(models.CatalogueInterpretedClaim).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
     assert db.query(models.CatalogueMasteringCandidate).count() == 0
 
     source = db.query(models.CatalogueSourceDocument).one()
@@ -139,14 +137,20 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert source.supplier_source_contract_id == "hills.price_list.v1"
     assert run.supplier_source_contract_id == source.supplier_source_contract_id
 
-    # Evidence extraction runs for real against the text-layer PDF; only the
-    # post-Raw interpretation model is stubbed, keyed by verbatim row text.
-    monkeypatch.setattr(catalogue_interpretation, "_model_interpret_rows", _grounded_interpretation_verdicts)
+    # Extraction now ALWAYS runs the deterministic vision path: the vision
+    # provider is stubbed to emit column-labeled cells, and conformance maps
+    # those cells through the supplier contract with no model in the loop.
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        extraction,
+        "_call_gemini_vision",
+        lambda content, *, media_type: extraction._VisionResponse(text=_vision_envelope(_VISION_ROWS)),
+    )
     flow_result = catalogue_ingestion_flow(ingestion_run_id=run_id)
 
     assert flow_result.terminal_status == "completed_with_warnings"
-    assert flow_result.rows_extracted == 4
-    assert flow_result.raw_observations_created == 4
+    assert flow_result.rows_extracted == 2
+    assert flow_result.raw_observations_created == 2
     assert flow_result.staging_items_created == 2
     assert flow_result.validation_issues_created == 1
     assert flow_result.mastering_candidates_created == 1
@@ -159,20 +163,22 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert status_payload["status"] == "completed_with_warnings"
     assert status_payload["started_at"] is not None
     assert status_payload["completed_at"] is not None
-    assert status_payload["items_extracted"] == 4
+    assert status_payload["items_extracted"] == 2
 
     raw_rows = db.query(models.CatalogueExtractedEvidence).order_by(models.CatalogueExtractedEvidence.id).all()
-    staging_rows = db.query(models.CatalogueInterpretedClaim).order_by(models.CatalogueInterpretedClaim.id).all()
-    assert len(raw_rows) == 4
+    staging_rows = db.query(models.CatalogueNormalizedRow).order_by(models.CatalogueNormalizedRow.id).all()
+    assert len(raw_rows) == 2
     assert len(staging_rows) == 2
     for raw_row in raw_rows:
         raw_contract = persistence.extracted_evidence_to_contract(raw_row)
-        assert raw_contract.raw_text
+        # Vision extraction records column-labeled cells, not PDF text lines.
+        assert raw_contract.extraction_method == ExtractionMethod.MODEL_VISION
+        assert raw_contract.raw_cells
         assert raw_contract.source_location.page_number == 1
-        assert raw_contract.source_location.source_object_key.startswith("page:1:line:")
+        assert raw_contract.source_location.source_object_key.startswith("page:1:obs:")
         assert raw_row.ingestion_run_uuid == str(run_id)
 
-    raw_texts_before_review = {row.raw_observation_uuid: row.raw_text for row in raw_rows}
+    raw_cells_before_review = {row.raw_observation_uuid: row.raw_cells_json for row in raw_rows}
 
     candidate = db.query(models.CatalogueMasteringCandidate).one()
     candidate_contract = persistence.mastering_candidate_to_contract(candidate)
@@ -181,11 +187,11 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert candidate_contract.supplier_product_resolution.supplier_id == 14
     assert candidate_contract.supplier_product_resolution.supplier_sku == "10447"
 
-    valid_staging = db.query(models.CatalogueInterpretedClaim).filter_by(
+    valid_staging = db.query(models.CatalogueNormalizedRow).filter_by(
         catalogue_item_uuid=candidate.catalogue_item_uuid
     ).one()
     invalid_staging = [row for row in staging_rows if row.catalogue_item_uuid != valid_staging.catalogue_item_uuid][0]
-    invalid_staging_contract = persistence.interpreted_claim_to_contract(invalid_staging)
+    invalid_staging_contract = persistence.normalized_row_to_contract(invalid_staging)
     assert invalid_staging_contract.raw_fields.supplier_sku == "Q-1"
 
     issue = db.query(models.CatalogueValidationIssue).one()
@@ -199,7 +205,13 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     invalid_raw = db.query(models.CatalogueExtractedEvidence).filter_by(
         raw_observation_uuid=issue.raw_observation_uuid
     ).one()
-    _assert_text_contains(_pdf_page_text(stored_path.read_bytes(), page_number=1), invalid_raw.raw_text)
+    # The blocking issue is grounded on the vision cells that carried the
+    # unresolved cost, not on a PDF text line.
+    invalid_raw_contract = persistence.extracted_evidence_to_contract(invalid_raw)
+    assert invalid_raw_contract.extraction_method == ExtractionMethod.MODEL_VISION
+    invalid_cells = {cell.column_name: cell.raw_value for cell in invalid_raw_contract.raw_cells}
+    assert invalid_cells.get("Product Code / 產品編號") == "Q-1"
+    assert invalid_cells.get("Gross Wholesale Price / 每箱·罐") == "By Quote"
     with pytest.raises(stages.BlockingValidationIssues):
         stages.MasteringService(db).prepare_candidate(
             stages.PrepareMasteringCandidateCommand(
@@ -325,14 +337,13 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
         serving=serving_contract,
         candidate=candidate,
         staging=valid_staging,
-        raw_texts_before_review=raw_texts_before_review,
-        source_bytes=stored_path.read_bytes(),
+        raw_cells_before_review=raw_cells_before_review,
     )
 
     replay_flow = catalogue_ingestion_flow(ingestion_run_id=run_id)
     assert replay_flow.terminal_status == "completed_with_warnings"
-    assert db.query(models.CatalogueExtractedEvidence).count() == 4
-    assert db.query(models.CatalogueInterpretedClaim).count() == 2
+    assert db.query(models.CatalogueExtractedEvidence).count() == 2
+    assert db.query(models.CatalogueNormalizedRow).count() == 2
     assert db.query(models.CatalogueMasteringCandidate).count() == 1
     with pytest.raises(TerminalRunReplay):
         claim_queued_run(db, ingestion_run_id=run_id)
@@ -357,19 +368,57 @@ def _submit(client: TestClient, source_bytes: bytes, *, idempotency_key: str):
     )
 
 
-def _grounded_interpretation_verdicts(rows: dict[str, str], runtime_contract) -> dict[str, dict | None]:
-    """Interpretation stub: verdicts keyed by verbatim row text, null for non-rows."""
+# Two vision observations, each a map of Hill's source-column heading -> printed
+# cell value. Conformance maps these named cells through the supplier contract:
+#   - row 1 is a complete, resolvable Hill's row (SKU 10447). Its composed
+#     product name (Product Range + Product Description, Life Stage omitted)
+#     joins to exactly "Hill's Healthy Cuisine Chicken 82g", matching the seeded
+#     product variant so approval/publish resolve it.
+#   - row 2 quotes "By Quote" for the wholesale price, so cost cannot be resolved
+#     and the row raises the blocking STAGING_COST_BASIS_UNRESOLVED issue.
+_VISION_ROWS = [
+    {
+        "Product Code / 產品編號": "10447",
+        "Product Range / 產品系列": "Hill's Healthy Cuisine Chicken",
+        "Product Description / 產品名稱": "82g",
+        "Size / 重量": "82g",
+        "Gross Wholesale Price / 每箱·罐": "13.10",
+        "Order Multiple / 訂貨單位": "1",
+    },
+    {
+        "Product Code / 產品編號": "Q-1",
+        "Product Description / 產品名稱": "Quoted Special Order Item",
+        "Gross Wholesale Price / 每箱·罐": "By Quote",
+    },
+]
 
-    acceptance_rows, _ = _acceptance_rows(b"", "fixture.pdf", "application/pdf")
-    by_text = {_fold_text(row["_raw_text"]): row for row in acceptance_rows}
-    verdicts: dict[str, dict | None] = {}
-    for observation_key, raw_text in rows.items():
-        match = by_text.get(_fold_text(raw_text))
-        if match is None:
-            verdicts[observation_key] = None
-            continue
-        verdicts[observation_key] = {k: v for k, v in match.items() if not k.startswith("_")}
-    return verdicts
+
+def _vision_envelope(rows: list[dict[str, str]]) -> str:
+    """Serialize rows as the typed Gemini vision evidence envelope the seam expects."""
+
+    return json.dumps(
+        {
+            "page_outcome": "evidence",
+            "observations": [
+                {
+                    "raw_text": None,
+                    "raw_cells": [
+                        {
+                            "cell_reference": None,
+                            "row_number": None,
+                            "column_name": column,
+                            "column_index": index + 1,
+                            "raw_value": value,
+                        }
+                        for index, (column, value) in enumerate(row.items())
+                    ],
+                    "bounding_box": {"x": 0, "y": 0, "width": 1, "height": 1, "unit": "px"},
+                    "confidence": "0.95",
+                }
+                for row in rows
+            ],
+        }
+    )
 
 
 def _acceptance_rows(_content, _filename, _content_type, contract=None):
@@ -410,12 +459,11 @@ def _assert_served_field_lineage(
     source: models.CatalogueSourceDocument,
     serving,
     candidate: models.CatalogueMasteringCandidate,
-    staging: models.CatalogueInterpretedClaim,
-    raw_texts_before_review: dict[str, str | None],
-    source_bytes: bytes,
+    staging: models.CatalogueNormalizedRow,
+    raw_cells_before_review: dict[str, str | None],
 ) -> None:
     candidate_contract = persistence.mastering_candidate_to_contract(candidate)
-    staging_contract = persistence.interpreted_claim_to_contract(staging)
+    staging_contract = persistence.normalized_row_to_contract(staging)
     raw_ids = [str(raw_id) for raw_id in serving.lineage.raw_observation_ids]
     raw_rows = (
         db.query(models.CatalogueExtractedEvidence)
@@ -435,26 +483,30 @@ def _assert_served_field_lineage(
 
     assert candidate_contract.catalogue_item_id == staging_contract.catalogue_item_id
     assert candidate_contract.raw_observation_ids == staging_contract.raw_observation_ids
-    assert staging_contract.proposed_fields.supplier_sku.value == staging_contract.raw_fields.supplier_sku
-    assert staging_contract.proposed_fields.cost.amount == Decimal("13.10")
+    assert staging_contract.normalized_fields.supplier_sku.value == staging_contract.raw_fields.supplier_sku
+    assert staging_contract.normalized_fields.cost.amount == Decimal("13.10")
     assert staging_contract.raw_fields.cost == "13.10"
 
     assert raw_contract.ingestion_run_id == run_id
     assert raw_contract.supplier_catalogue_id == UUID(source.supplier_catalogue_uuid)
     assert raw_contract.source_file_id == UUID(source.source_file_uuid)
     assert raw_contract.source_location.page_number == 1
-    assert raw_contract.source_location.source_object_key == "page:1:line:3"
-    assert raw_row.raw_text == raw_texts_before_review[raw_row.raw_observation_uuid]
-    assert "13.10" in raw_contract.raw_text
-    page_text = _pdf_page_text(source_bytes, page_number=raw_contract.source_location.page_number)
-    _assert_text_contains(page_text, raw_contract.raw_text)
-    _assert_text_contains(raw_contract.raw_text, serving.canonical_sku)
-    _assert_text_contains(raw_contract.raw_text, serving.supplier_offering.supplier_sku)
-    _assert_text_contains(raw_contract.raw_text, serving.product_variant_name)
-    _assert_decimal_grounded(raw_contract.raw_text, serving.current_approved_cost.amount, label="approved cost")
-    _assert_text_contains(raw_contract.raw_text, serving.current_approved_cost.currency)
+    # Vision observation keys derive from cell content + location, not text lines.
+    assert raw_contract.source_location.source_object_key.startswith("page:1:obs:")
+    # The evidence cells are immutable between review and publication.
+    assert raw_row.raw_cells_json == raw_cells_before_review[raw_row.raw_observation_uuid]
+    # Every served field is grounded in the verbatim vision cells that produced
+    # the normalized row (currency/price-basis are contract declarations, not
+    # source cells, so they are asserted structurally above, not here).
+    assert raw_contract.raw_cells
+    cells_text = " ".join(str(cell.raw_value) for cell in raw_contract.raw_cells)
+    assert "13.10" in cells_text
+    _assert_text_contains(cells_text, serving.canonical_sku)
+    _assert_text_contains(cells_text, serving.supplier_offering.supplier_sku)
+    _assert_text_contains(cells_text, serving.product_variant_name)
+    _assert_decimal_grounded(cells_text, serving.current_approved_cost.amount, label="approved cost")
     _assert_text_contains(
-        raw_contract.raw_text,
+        cells_text,
         f"{serving.purchasing_packaging.content_amount.normalize()}"
         f"{serving.purchasing_packaging.content_uom.code.value.lower()}",
     )
@@ -477,8 +529,8 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueInterpretedClaimEvidence,
-        models.CatalogueInterpretedClaim,
+        models.CatalogueNormalizedRowEvidence,
+        models.CatalogueNormalizedRow,
         models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,

@@ -24,7 +24,7 @@ from schemas.catalogue_pipeline import (
     Quantity,
     ExtractedEvidenceV1,
     ServingItemV1,
-    InterpretedClaimV1,
+    NormalizedRowV1,
     UnitOfMeasure,
     ValidationIssueV1,
     get_contract_model,
@@ -43,7 +43,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 MODEL_BY_NAME = {
     "ExtractionProfileV1": ExtractionProfileV1,
     "ExtractedEvidenceV1": ExtractedEvidenceV1,
-    "InterpretedClaimV1": InterpretedClaimV1,
+    "NormalizedRowV1": NormalizedRowV1,
     "MasteringCandidateV1": MasteringCandidateV1,
     "ValidationIssueV1": ValidationIssueV1,
     "ServingItemV1": ServingItemV1,
@@ -51,23 +51,23 @@ MODEL_BY_NAME = {
 
 EXPECTED_INVALIDS = {
     "confidence_above_1.json": (("extraction_confidence",), "less than or equal to 1"),
-    "content_amount_without_uom.json": (("proposed_fields", "packaging"), "content_amount and content_uom"),
+    "content_amount_without_uom.json": (("normalized_fields", "packaging"), "content_amount and content_uom"),
     "duplicate_claim_raw_observation_ids.json": ((), "raw_observation_ids must be unique"),
     "empty_source_location.json": (("source_location",), "SourceLocation requires at least one meaningful locator"),
     "forbidden_extra_field.json": (("review_status",), "Extra inputs are not permitted"),
     "malformed_bounding_box.json": (("source_location", "bounding_box", "width"), "greater than 0"),
     "mastering_approved_no_lineage.json": (("lineage",), "Field required"),
-    "other_uom_without_label.json": (("proposed_fields", "packaging", "purchase_uom"), "OTHER UOM requires a label"),
+    "other_uom_without_label.json": (("normalized_fields", "packaging", "purchase_uom"), "OTHER UOM requires a label"),
     "percentage_discount_above_100.json": (
-        ("proposed_fields", "mbb_terms", 0, "benefit", "percentage_discount", "percentage"),
+        ("normalized_fields", "mbb_terms", 0, "benefit", "percentage_discount", "percentage"),
         "less than or equal to 100",
     ),
     "raw_observation_no_evidence.json": ((), "requires raw_text or at least one raw cell"),
     "serving_pending_review.json": ((), "Serving Item requires APPROVED"),
-    "unsupported_currency.json": (("proposed_fields", "cost", "currency"), "Input should be 'HKD'"),
+    "unsupported_currency.json": (("normalized_fields", "cost", "currency"), "Input should be 'HKD'"),
     "wrong_contract_version.json": (("contract_version",), "catalogue.extracted_evidence.v1"),
     "zero_quantity.json": (
-        ("proposed_fields", "mbb_terms", 0, "condition", "minimum_quantity", "quantity", "amount"),
+        ("normalized_fields", "mbb_terms", 0, "condition", "minimum_quantity", "quantity", "amount"),
         "greater than 0",
     ),
 }
@@ -106,7 +106,7 @@ def test_public_registry_and_contract_version_rejection():
     assert set(registry) == {
         "catalogue.extraction_profile.v1",
         "catalogue.extracted_evidence.v1",
-        "catalogue.interpreted_claim.v1",
+        "catalogue.normalized_row.v1",
         "catalogue.mastering_candidate.v1",
         "catalogue.validation_issue.v1",
         "catalogue.serving_item.v1",
@@ -142,7 +142,7 @@ def test_extracted_evidence_and_lineage_reject_duplicate_evidence_ids():
     data = _load(FIXTURE_ROOT / "valid" / "staging_item_with_mbb.json")
     data["raw_observation_ids"].append(data["raw_observation_ids"][0])
     with pytest.raises(ValidationError, match="raw_observation_ids must be unique"):
-        InterpretedClaimV1.model_validate(data)
+        NormalizedRowV1.model_validate(data)
 
     candidate = _load(FIXTURE_ROOT / "valid" / "mastering_candidate_no_family.json")
     candidate["raw_observation_ids"].append(candidate["raw_observation_ids"][0])
@@ -204,8 +204,8 @@ def test_packaging_keeps_unknowns_null_and_validates_uom_rules():
 
 
 def test_mbb_discriminated_condition_and_benefit_parsing():
-    staging = InterpretedClaimV1.model_validate(_load(FIXTURE_ROOT / "valid" / "staging_item_with_mbb.json"))
-    terms = staging.proposed_fields.mbb_terms
+    staging = NormalizedRowV1.model_validate(_load(FIXTURE_ROOT / "valid" / "staging_item_with_mbb.json"))
+    terms = staging.normalized_fields.mbb_terms
 
     assert isinstance(terms[0].condition, MinimumQuantityCondition)
     assert isinstance(terms[0].benefit, DiscountedUnitPriceBenefit)
@@ -271,9 +271,9 @@ def test_schema_artifacts_are_current_and_have_contract_shape():
     )
     assert result.returncode == 0, result.stderr
 
-    schema_path = REPO_ROOT / "docs/contracts/catalogue-pipeline/v1/catalogue.interpreted_claim.v1.schema.json"
+    schema_path = REPO_ROOT / "docs/contracts/catalogue-pipeline/v1/catalogue.normalized_row.v1.schema.json"
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    assert schema["properties"]["contract_version"]["const"] == "catalogue.interpreted_claim.v1"
+    assert schema["properties"]["contract_version"]["const"] == "catalogue.normalized_row.v1"
     assert schema["additionalProperties"] is False
     encoded = json.dumps(schema)
     assert "discriminator" in encoded and "condition_type" in encoded and "benefit_type" in encoded

@@ -367,7 +367,7 @@
   ],
   "pipeline_mapping": {
     "raw_observation_contract_id": "catalogue.extracted_evidence.v1",
-    "staging_item_contract_id": "catalogue.interpreted_claim.v1",
+    "staging_item_contract_id": "catalogue.normalized_row.v1",
     "raw_observation_fields": [
       "supplier_sku",
       "description",

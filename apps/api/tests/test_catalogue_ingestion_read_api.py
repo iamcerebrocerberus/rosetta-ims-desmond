@@ -1,7 +1,13 @@
-"""Per-layer read API over the catalogue pipeline (raw / staging / intermediate)."""
+"""Per-layer read API over the catalogue pipeline (raw / staging / intermediate).
+
+Exercises a real submission + deterministic pipeline run (vision extraction is
+stubbed to return contract-labeled cells; the supplier contract then maps them
+with no AI) and reads each layer back.
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 from io import BytesIO
@@ -9,7 +15,6 @@ from uuid import UUID
 
 import pytest
 import pypdf
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{tempfile.mkdtemp()}/t.db")
 os.environ.setdefault("PREFECT_API_MODE", "offline")
@@ -23,20 +28,21 @@ import models  # noqa: E402
 from dependencies import require_user  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from orchestration.catalogue_flows import catalogue_ingestion_flow  # noqa: E402
-from services import catalogue_interpretation  # noqa: E402
+from services import catalogue_evidence_extraction as extraction  # noqa: E402
 from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueSubmissionService  # noqa: E402
 
 
 models.Base.metadata.create_all(bind=database.engine)
 
-HILLS_ROW = "10447 Hill's Healthy Cuisine Chicken 82g 82g HKD 13.10"
-HILLS_FIELDS = {
-    "description": "Hill's Healthy Cuisine Chicken 82g",
-    "brand": "Hill's",
-    "supplier_sku": "10447",
-    "cost_price": 13.1,
-    "pack_size": "82g",
-    "confidence": "0.96",
+# One Hill's product row, labeled by the supplier contract's source columns.
+HILLS_ROW = {
+    "Product Code / 產品編號": "10447",
+    "Product Range / 產品系列": "Science Plan",
+    "Life Stage / 生命階段": "Adult",
+    "Product Description / 產品名稱": "Chicken 82g",
+    "Size / 重量": "82g",
+    "Gross Wholesale Price / 每箱·罐": "13.10",
+    "Order Multiple / 訂貨單位": "12",
 }
 
 
@@ -92,8 +98,8 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueInterpretedClaimEvidence,
-        models.CatalogueInterpretedClaim,
+        models.CatalogueNormalizedRowEvidence,
+        models.CatalogueNormalizedRow,
         models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
@@ -103,36 +109,47 @@ def _reset(session):
     session.commit()
 
 
-def _text_pdf(lines: list[str]) -> bytes:
+def _pdf_bytes(page_count: int = 1) -> bytes:
     writer = pypdf.PdfWriter()
-    page = writer.add_blank_page(width=612, height=792)
-    font = DictionaryObject(
-        {
-            NameObject("/Type"): NameObject("/Font"),
-            NameObject("/Subtype"): NameObject("/Type1"),
-            NameObject("/BaseFont"): NameObject("/Helvetica"),
-        }
-    )
-    font_ref = writer._add_object(font)
-    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})})
-    parts = ["BT", "/F1 10 Tf", "36 740 Td", "16 TL"]
-    for line in lines:
-        parts.append(f"({line.replace(chr(92), chr(92) * 2).replace('(', chr(92) + '(').replace(')', chr(92) + ')')}) Tj")
-        parts.append("T*")
-    parts.append("ET")
-    stream = DecodedStreamObject()
-    stream.set_data("\n".join(parts).encode("utf-8"))
-    page[NameObject("/Contents")] = writer._add_object(stream)
+    for _ in range(page_count):
+        writer.add_blank_page(width=612, height=792)
     out = BytesIO()
     writer.write(out)
     return out.getvalue()
 
 
+def _vision_envelope(rows: list[dict[str, str]]) -> str:
+    return json.dumps(
+        {
+            "page_outcome": "evidence",
+            "observations": [
+                {
+                    "raw_text": None,
+                    "raw_cells": [
+                        {
+                            "cell_reference": None,
+                            "row_number": None,
+                            "column_name": column,
+                            "column_index": index + 1,
+                            "raw_value": value,
+                        }
+                        for index, (column, value) in enumerate(row.items())
+                    ],
+                    "bounding_box": {"x": 0, "y": 0, "width": 1, "height": 1, "unit": "px"},
+                    "confidence": "0.95",
+                }
+                for row in rows
+            ],
+        }
+    )
+
+
 def _run_pipeline(db, monkeypatch) -> UUID:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {key: dict(HILLS_FIELDS) for key in rows},
+        extraction,
+        "_call_gemini_vision",
+        lambda content, *, media_type: extraction._VisionResponse(text=_vision_envelope([HILLS_ROW])),
     )
     service = CatalogueSubmissionService(db, upload_root=os.environ["CATALOGUE_UPLOAD_DIR"], max_upload_bytes=1024 * 1024)
     result = service.submit(
@@ -140,7 +157,7 @@ def _run_pipeline(db, monkeypatch) -> UUID:
             supplier_id=14,
             original_filename="hills.pdf",
             content_type="application/pdf",
-            stream=BytesIO(_text_pdf([HILLS_ROW])),
+            stream=BytesIO(_pdf_bytes()),
             contract_id=None,
             contract_version=None,
             idempotency_key=None,
@@ -163,35 +180,37 @@ def test_raw_layer_returns_file_facts_and_attempts(client, db, monkeypatch):
     assert body["attempts"][0]["status"] == "completed"
     # File facts only — no bytes, no source_ref path, no extracted content.
     assert "source_ref" not in body["source"]
-    assert "raw_text" not in str(body)
 
 
-def test_staging_layer_returns_verbatim_extracted_evidence(client, db, monkeypatch):
+def test_staging_layer_returns_evidence_and_normalized_rows(client, db, monkeypatch):
     run = _run_pipeline(db, monkeypatch)
     body = client.get(f"/catalogues/ingestions/{run}/staging").json()
 
     assert body["layer"] == "staging"
-    assert body["count"] == 1
-    evidence = body["evidence"][0]
-    assert evidence["raw_text"] == HILLS_ROW
-    assert evidence["extraction_method"] == "PDF_TEXT"
-    assert evidence["source_location"]["page_number"] == 1
-    # No interpreted/semantic fields on evidence records.
-    assert "proposed_fields" not in evidence and "cost" not in evidence
+    # Verbatim evidence (audit record) + the contract-conformed normalized rows.
+    assert body["evidence_count"] == 1
+    assert body["evidence"][0]["extraction_method"] == "MODEL_VISION"
+    assert body["normalized_row_count"] == 1
+    row = body["normalized_rows"][0]
+    assert row["raw_fields"]["supplier_sku"] == "10447"
+    fields = row["normalized_fields"]
+    assert fields["supplier_sku"]["value"] == "10447"
+    assert fields["product_name"]["value"] == "Science Plan Adult Chicken 82g"
+    assert fields["brand"]["value"] == "Hill's"
+    assert fields["cost"]["currency"] == "HKD"
+    assert fields["cost"]["amount"] == "13.10"
 
 
-def test_intermediate_layer_returns_claims_and_candidates(client, db, monkeypatch):
+def test_intermediate_layer_returns_validation_and_candidates(client, db, monkeypatch):
     run = _run_pipeline(db, monkeypatch)
     body = client.get(f"/catalogues/ingestions/{run}/intermediate").json()
 
     assert body["layer"] == "intermediate"
-    assert len(body["claims"]) == 1
-    claim = body["claims"][0]
-    assert claim["raw_fields"]["supplier_sku"] == "10447"
-    assert claim["proposed_fields"]["supplier_sku"]["value"] == "10447"
-    assert claim["proposed_fields"]["cost"]["currency"] == "HKD"
+    # Business interpretation only — normalized rows live under /staging.
+    assert "normalized_rows" not in body and "claims" not in body
     assert len(body["mastering_candidates"]) == 1
     assert body["mastering_candidates"][0]["review_status"] == "PENDING_REVIEW"
+    assert isinstance(body["validation_issues"], list)
 
 
 def test_read_endpoints_require_authorization(client, db, monkeypatch):

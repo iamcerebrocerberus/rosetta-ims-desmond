@@ -95,8 +95,8 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueInterpretedClaimEvidence,
-        models.CatalogueInterpretedClaim,
+        models.CatalogueNormalizedRowEvidence,
+        models.CatalogueNormalizedRow,
         models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
@@ -150,7 +150,7 @@ def test_submission_service_registers_source_import_and_queued_run(db, tmp_path)
     assert db.query(models.CatalogueSourceDocument).count() == 1
     assert db.query(models.IngestionRun).count() == 1
     assert db.query(models.CatalogueExtractedEvidence).count() == 0
-    assert db.query(models.CatalogueInterpretedClaim).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
     assert db.query(models.CatalogueMasteringCandidate).count() == 0
     assert db.query(models.CatalogueServingPublication).count() == 0
 

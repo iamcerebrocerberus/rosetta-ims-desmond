@@ -23,7 +23,7 @@ from schemas.catalogue_pipeline import (
     MasteringCandidateV1,
     ExtractedEvidenceV1,
     ServingItemV1,
-    InterpretedClaimV1,
+    NormalizedRowV1,
     ValidationIssueV1,
 )
 from schemas.catalogue_pipeline.common import (
@@ -57,7 +57,7 @@ from schemas.catalogue_pipeline.mastering_candidate_v1 import (
 )
 from schemas.catalogue_pipeline.extracted_evidence_v1 import RawCell, SourceLocation
 from schemas.catalogue_pipeline.serving_item_v1 import PublicationLineage, SupplierOffering
-from schemas.catalogue_pipeline.interpreted_claim_v1 import ProposedCatalogueFields, ClaimRawFields
+from schemas.catalogue_pipeline.normalized_row_v1 import NormalizedCatalogueFields, ClaimRawFields
 from services import catalogue_pipeline_persistence as persistence
 from services import supplier_source_contract_runtime
 
@@ -167,12 +167,12 @@ class CaptureExtractedEvidenceCommand:
 
 
 @dataclass(frozen=True)
-class BuildInterpretedClaimCommand:
+class BuildNormalizedRowCommand:
     """Build one interpreted claim from persisted extracted evidence observations."""
 
     raw_observation_ids: tuple[UUID, ...]
     raw_fields: ClaimRawFields | dict[str, Any]
-    proposed_fields: ProposedCatalogueFields | dict[str, Any]
+    normalized_fields: NormalizedCatalogueFields | dict[str, Any]
     idempotency_key: str
     review_requirement: ReviewRequirement | None = None
     validation_issue_ids: tuple[UUID, ...] = ()
@@ -181,7 +181,7 @@ class BuildInterpretedClaimCommand:
 
 
 @dataclass(frozen=True)
-class EvaluateInterpretedClaimCommand:
+class EvaluateNormalizedRowCommand:
     """Evaluate domain validation rules for one staged item."""
 
     catalogue_item_id: UUID
@@ -349,9 +349,9 @@ class ExtractedEvidenceService(_TransactionalService):
 class CatalogueValidationService(_TransactionalService):
     """Persist durable validation issues for cross-record and domain rules."""
 
-    def evaluate_claim(self, command: EvaluateInterpretedClaimCommand) -> StageResult:
-        staging_row = _interpreted_claim_row(self.db, command.catalogue_item_id)
-        staging = persistence.interpreted_claim_to_contract(staging_row)
+    def evaluate_claim(self, command: EvaluateNormalizedRowCommand) -> StageResult:
+        staging_row = _normalized_row_row(self.db, command.catalogue_item_id)
+        staging = persistence.normalized_row_to_contract(staging_row)
         issue_specs = _claim_issue_specs(staging)
 
         created = reused = warning_count = blocking_count = 0
@@ -452,7 +452,7 @@ class CatalogueValidationService(_TransactionalService):
             metrics=StageMetrics(input_count=1, created_count=1),
         )
 
-    def _issue_for_spec(self, staging: InterpretedClaimV1, spec: dict[str, Any], created_at: datetime) -> ValidationIssueV1:
+    def _issue_for_spec(self, staging: NormalizedRowV1, spec: dict[str, Any], created_at: datetime) -> ValidationIssueV1:
         issue_id = _stable_uuid(
             "validation-issue",
             {
@@ -487,7 +487,7 @@ class CatalogueValidationService(_TransactionalService):
         )
 
 
-class InterpretedClaimService(_TransactionalService):
+class NormalizedRowService(_TransactionalService):
     """Persist interpreted claims (timeline step 6, INTERMEDIATE layer).
 
     Terminology: despite the historical "staging" name, these records are the
@@ -496,7 +496,7 @@ class InterpretedClaimService(_TransactionalService):
     records are the extracted evidence observations (step 4).
     """
 
-    def build_item(self, command: BuildInterpretedClaimCommand) -> StageResult:
+    def build_item(self, command: BuildNormalizedRowCommand) -> StageResult:
         if not command.raw_observation_ids:
             raise MissingOrIncompatibleLineage("An interpreted claim requires at least one extracted evidence observation")
         if len(command.raw_observation_ids) != len(set(command.raw_observation_ids)):
@@ -515,8 +515,8 @@ class InterpretedClaimService(_TransactionalService):
             ),
         )
         raw_fields = ClaimRawFields.model_validate(command.raw_fields)
-        proposed_fields = ProposedCatalogueFields.model_validate(command.proposed_fields)
-        review_requirement = command.review_requirement or _review_requirement(raw_fields, proposed_fields, command.validation_issue_ids)
+        normalized_fields = NormalizedCatalogueFields.model_validate(command.normalized_fields)
+        review_requirement = command.review_requirement or _review_requirement(raw_fields, normalized_fields, command.validation_issue_ids)
         catalogue_item_id = _stable_uuid(
             "staging-item",
             {
@@ -524,14 +524,14 @@ class InterpretedClaimService(_TransactionalService):
                 "idempotency_key": command.idempotency_key,
             },
         )
-        contract = InterpretedClaimV1.model_validate(
+        contract = NormalizedRowV1.model_validate(
             {
-                "contract_version": "catalogue.interpreted_claim.v1",
+                "contract_version": "catalogue.normalized_row.v1",
                 "trace": trace.model_dump(mode="json"),
                 "catalogue_item_id": str(catalogue_item_id),
                 "raw_observation_ids": [str(item) for item in command.raw_observation_ids],
                 "raw_fields": raw_fields.model_dump(mode="json"),
-                "proposed_fields": proposed_fields.model_dump(mode="json"),
+                "normalized_fields": normalized_fields.model_dump(mode="json"),
                 "review_requirement": review_requirement.value,
                 "validation_issue_ids": [str(item) for item in command.validation_issue_ids],
                 "created_at": _iso(command.created_at or _now()),
@@ -539,17 +539,17 @@ class InterpretedClaimService(_TransactionalService):
             }
         )
 
-        existing = persistence._interpreted_claim(self.db, catalogue_item_id)  # noqa: SLF001
+        existing = persistence._normalized_row(self.db, catalogue_item_id)  # noqa: SLF001
         if existing is not None:
             _assert_same_material(
-                _claim_material(persistence.interpreted_claim_to_contract(existing)),
+                _claim_material(persistence.normalized_row_to_contract(existing)),
                 _claim_material(contract),
                 f"interpreted claim {catalogue_item_id}",
             )
             reused = 1
             created = 0
         else:
-            persistence.persist_interpreted_claim(self.db, contract)
+            persistence.persist_normalized_row(self.db, contract)
             reused = 0
             created = 1
         self._finish()
@@ -564,9 +564,9 @@ class MasteringService(_TransactionalService):
     """Prepare reviewable mastering candidates from eligible interpreted claims."""
 
     def prepare_candidate(self, command: PrepareMasteringCandidateCommand) -> StageResult:
-        staging_row = _interpreted_claim_row(self.db, command.catalogue_item_id)
+        staging_row = _normalized_row_row(self.db, command.catalogue_item_id)
         _raise_if_open_blocking(self.db, catalogue_item_uuid=str(command.catalogue_item_id))
-        staging = persistence.interpreted_claim_to_contract(staging_row)
+        staging = persistence.normalized_row_to_contract(staging_row)
         candidate_id = _stable_uuid(
             "mastering-candidate",
             {
@@ -708,7 +708,7 @@ class ReviewDecisionService(_TransactionalService):
         candidate.override_reason = command.override_reason
         candidate.review_decision_uuid = str(decision_id)
         if command.review_status in {ReviewStatus.REJECTED, ReviewStatus.NEEDS_CLARIFICATION}:
-            staging = _interpreted_claim_row(self.db, UUID(candidate.catalogue_item_uuid))
+            staging = _normalized_row_row(self.db, UUID(candidate.catalogue_item_uuid))
             staging.stage_status = "NEEDS_REVIEW"
         self._finish()
         return StageResult(
@@ -1068,35 +1068,35 @@ def _assert_recorded_contract(label: str, contract_id: str | None, version: str 
         raise SupplierContractMismatch(f"{label} contract_version={version} does not match resolved {runtime_contract.version}")
 
 
-def _claim_issue_specs(staging: InterpretedClaimV1) -> list[dict[str, Any]]:
+def _claim_issue_specs(staging: NormalizedRowV1) -> list[dict[str, Any]]:
     specs: list[dict[str, Any]] = []
-    if staging.raw_fields.cost and staging.proposed_fields.cost is None:
+    if staging.raw_fields.cost and staging.normalized_fields.cost is None:
         specs.append(
             {
                 "stage": ValidationStage.STAGING,
                 "issue_code": "STAGING_COST_BASIS_UNRESOLVED",
                 "severity": IssueSeverity.BLOCKING,
                 "message": "Rosetta observed a source cost but does not yet know the amount, currency, or price basis.",
-                "field_path": "/proposed_fields/cost",
+                "field_path": "/normalized_fields/cost",
                 "raw_value": staging.raw_fields.cost,
                 "expected_value": "Review the source row and decide the HKD amount and price basis.",
                 "review_guidance": "Confirm the supplier cost amount and what one quoted price buys before approval.",
             }
         )
-    if staging.raw_fields.packaging and staging.proposed_fields.packaging is None:
+    if staging.raw_fields.packaging and staging.normalized_fields.packaging is None:
         specs.append(
             {
                 "stage": ValidationStage.STAGING,
                 "issue_code": "STAGING_PACKAGING_UNRESOLVED",
                 "severity": IssueSeverity.WARNING,
                 "message": "Rosetta observed packaging text but has not proposed purchase, sellable-unit, and content semantics.",
-                "field_path": "/proposed_fields/packaging",
+                "field_path": "/normalized_fields/packaging",
                 "raw_value": staging.raw_fields.packaging,
                 "expected_value": "Structured packaging or explicit decision to leave unknown.",
                 "review_guidance": "Decide whether the text is purchase packaging, sellable units, content measure, or order multiple.",
             }
         )
-    packaging = staging.proposed_fields.packaging
+    packaging = staging.normalized_fields.packaging
     if packaging and packaging.content_amount is not None and packaging.sellable_units_per_purchase_unit == packaging.content_amount:
         content_uom = packaging.content_uom.code.value if packaging.content_uom and packaging.content_uom.code else None
         if content_uom in {UnitCode.ML.value, UnitCode.G.value, UnitCode.KG.value, UnitCode.L.value}:
@@ -1106,7 +1106,7 @@ def _claim_issue_specs(staging: InterpretedClaimV1) -> list[dict[str, Any]]:
                     "issue_code": "STAGING_CONTENT_MEASURE_AS_SELLABLE_COUNT",
                     "severity": IssueSeverity.BLOCKING,
                     "message": "Content measurement appears to have been reused as a sellable-unit count.",
-                    "field_path": "/proposed_fields/packaging/sellable_units_per_purchase_unit",
+                    "field_path": "/normalized_fields/packaging/sellable_units_per_purchase_unit",
                     "raw_value": staging.raw_fields.packaging,
                     "proposed_value": str(packaging.sellable_units_per_purchase_unit),
                     "expected_value": "Sellable-unit count must be separate from content amount.",
@@ -1118,34 +1118,34 @@ def _claim_issue_specs(staging: InterpretedClaimV1) -> list[dict[str, Any]]:
 
 def _review_requirement(
     raw_fields: ClaimRawFields,
-    proposed_fields: ProposedCatalogueFields,
+    normalized_fields: NormalizedCatalogueFields,
     validation_issue_ids: tuple[UUID, ...],
 ) -> ReviewRequirement:
     if validation_issue_ids:
         return ReviewRequirement.REQUIRED
-    if raw_fields.cost and proposed_fields.cost is None:
+    if raw_fields.cost and normalized_fields.cost is None:
         return ReviewRequirement.BLOCKING
-    if raw_fields.packaging and proposed_fields.packaging is None:
+    if raw_fields.packaging and normalized_fields.packaging is None:
         return ReviewRequirement.RECOMMENDED
     return ReviewRequirement.NOT_REQUIRED
 
 
-def _default_supplier_product_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
+def _default_supplier_product_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
     source = _source_document_for_trace(staging)
     supplier_id = source.supplier_id if source else None
-    supplier_sku = _proposal_text(staging.proposed_fields.supplier_sku) or staging.raw_fields.supplier_sku
+    supplier_sku = _proposal_text(staging.normalized_fields.supplier_sku) or staging.raw_fields.supplier_sku
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if supplier_sku else ResolutionState.UNRESOLVED.value,
         "supplier_id": supplier_id,
         "supplier_product_id": f"supplier:{supplier_id}:offer:{supplier_sku}" if supplier_id and supplier_sku else None,
         "supplier_sku": supplier_sku,
-        "barcode": _proposal_text(staging.proposed_fields.barcode) or staging.raw_fields.barcode,
+        "barcode": _proposal_text(staging.normalized_fields.barcode) or staging.raw_fields.barcode,
     }
 
 
-def _default_product_variant_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
-    proposed_name = _proposal_text(staging.proposed_fields.product_name) or staging.raw_fields.product_name
-    supplier_sku = _proposal_text(staging.proposed_fields.supplier_sku) or staging.raw_fields.supplier_sku
+def _default_product_variant_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
+    proposed_name = _proposal_text(staging.normalized_fields.product_name) or staging.raw_fields.product_name
+    supplier_sku = _proposal_text(staging.normalized_fields.supplier_sku) or staging.raw_fields.supplier_sku
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if proposed_name else ResolutionState.UNRESOLVED.value,
         "canonical_sku": supplier_sku,
@@ -1156,24 +1156,24 @@ def _default_product_variant_resolution(staging: InterpretedClaimV1) -> dict[str
     }
 
 
-def _default_packaging_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
-    packaging = staging.proposed_fields.packaging
+def _default_packaging_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
+    packaging = staging.normalized_fields.packaging
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if packaging else ResolutionState.UNRESOLVED.value,
         "packaging": packaging.model_dump(mode="json", exclude={"evidence"}) if packaging else None,
     }
 
 
-def _default_supplier_price_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
-    cost = staging.proposed_fields.cost
+def _default_supplier_price_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
+    cost = staging.normalized_fields.cost
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if cost else ResolutionState.UNRESOLVED.value,
         "current_cost": cost.model_dump(mode="json", exclude={"evidence"}) if cost else None,
     }
 
 
-def _default_mbb_resolution(staging: InterpretedClaimV1) -> dict[str, Any]:
-    terms = staging.proposed_fields.mbb_terms
+def _default_mbb_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
+    terms = staging.normalized_fields.mbb_terms
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if terms else ResolutionState.UNRESOLVED.value,
         "terms": [term.model_dump(mode="json") for term in terms],
@@ -1200,7 +1200,7 @@ def _proposal_text(value) -> str | None:
     return value.value if value is not None else None
 
 
-def _source_document_for_trace(staging: InterpretedClaimV1):
+def _source_document_for_trace(staging: NormalizedRowV1):
     # Filled by tests/services that already have the same module-level database
     # session would be leaky, so this function intentionally returns None. The
     # supplier_id is supplied by explicit mastering commands when needed.
@@ -1383,8 +1383,8 @@ def _extracted_evidence_row(db: Session, raw_id: UUID) -> models.CatalogueExtrac
     return row
 
 
-def _interpreted_claim_row(db: Session, catalogue_item_id: UUID) -> models.CatalogueInterpretedClaim:
-    row = persistence._interpreted_claim(db, catalogue_item_id)  # noqa: SLF001
+def _normalized_row_row(db: Session, catalogue_item_id: UUID) -> models.CatalogueNormalizedRow:
+    row = persistence._normalized_row(db, catalogue_item_id)  # noqa: SLF001
     if row is None:
         raise UpstreamRecordNotFound(f"interpreted claim {catalogue_item_id} does not exist")
     return row
@@ -1513,7 +1513,7 @@ def _raw_material(contract: ExtractedEvidenceV1) -> dict[str, Any]:
     return payload
 
 
-def _claim_material(contract: InterpretedClaimV1) -> dict[str, Any]:
+def _claim_material(contract: NormalizedRowV1) -> dict[str, Any]:
     """Material equality for interpreted-claim (step 6) replay.
 
     Mirrors the step-4 policy: per-attempt volatile values — ``created_at``
@@ -1527,9 +1527,9 @@ def _claim_material(contract: InterpretedClaimV1) -> dict[str, Any]:
 
     payload = contract.model_dump(mode="json")
     payload.pop("created_at", None)
-    proposed = payload.get("proposed_fields")
+    proposed = payload.get("normalized_fields")
     if isinstance(proposed, dict):
-        payload["proposed_fields"] = _scrub_evidence_confidence(proposed)
+        payload["normalized_fields"] = _scrub_evidence_confidence(proposed)
     return payload
 
 

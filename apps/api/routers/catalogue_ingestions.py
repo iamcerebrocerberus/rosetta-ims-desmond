@@ -190,16 +190,33 @@ def get_staging_layer(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_capability("catalogue_onboard")),
 ) -> dict[str, Any]:
-    """STAGING layer (steps 3-4): verbatim, source-located extracted evidence."""
+    """STAGING layer (steps 3-4): verbatim, source-located extracted evidence
+    plus the contract-conformed normalized rows deterministically mapped from
+    it. Evidence is the audit record; normalized rows are the staging output."""
     _load_run_or_404(db, run_uuid)
-    rows = (
-        db.query(models.CatalogueExtractedEvidence)
-        .filter_by(ingestion_run_uuid=str(run_uuid))
+    run = str(run_uuid)
+    evidence = [
+        persistence.extracted_evidence_to_contract(r).model_dump(mode="json")
+        for r in db.query(models.CatalogueExtractedEvidence)
+        .filter_by(ingestion_run_uuid=run)
         .order_by(models.CatalogueExtractedEvidence.id)
         .all()
-    )
-    evidence = [persistence.extracted_evidence_to_contract(r).model_dump(mode="json") for r in rows]
-    return {"ingestion_run_id": str(run_uuid), "layer": "staging", "count": len(evidence), "evidence": evidence}
+    ]
+    normalized_rows = [
+        persistence.normalized_row_to_contract(r).model_dump(mode="json")
+        for r in db.query(models.CatalogueNormalizedRow)
+        .filter_by(ingestion_run_uuid=run)
+        .order_by(models.CatalogueNormalizedRow.id)
+        .all()
+    ]
+    return {
+        "ingestion_run_id": run,
+        "layer": "staging",
+        "evidence_count": len(evidence),
+        "evidence": evidence,
+        "normalized_row_count": len(normalized_rows),
+        "normalized_rows": normalized_rows,
+    }
 
 
 @router.get("/ingestions/{run_uuid}/intermediate")
@@ -208,14 +225,11 @@ def get_intermediate_layer(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_capability("catalogue_onboard")),
 ) -> dict[str, Any]:
-    """INTERMEDIATE layer (steps 5-8): interpreted claims, their validation
-    issues, and prepared mastering candidates — proposals awaiting review."""
+    """INTERMEDIATE layer (steps 7-8): business interpretation of the normalized
+    rows — validation issues and prepared mastering candidates awaiting review.
+    (The normalized rows themselves are Staging output; see /staging.)"""
     _load_run_or_404(db, run_uuid)
     run_filter = {"ingestion_run_uuid": str(run_uuid)}
-    claims = [
-        persistence.interpreted_claim_to_contract(r).model_dump(mode="json")
-        for r in db.query(models.CatalogueInterpretedClaim).filter_by(**run_filter).order_by(models.CatalogueInterpretedClaim.id).all()
-    ]
     issues = [
         persistence.validation_issue_to_contract(r).model_dump(mode="json")
         for r in db.query(models.CatalogueValidationIssue).filter_by(**run_filter).order_by(models.CatalogueValidationIssue.id).all()
@@ -227,7 +241,6 @@ def get_intermediate_layer(
     return {
         "ingestion_run_id": str(run_uuid),
         "layer": "intermediate",
-        "claims": claims,
         "validation_issues": issues,
         "mastering_candidates": candidates,
     }

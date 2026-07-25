@@ -2,7 +2,7 @@
 
 Serves only the v1 upload/reparse endpoints. The v2 catalogue pipeline uses
 ``services.catalogue_evidence_extraction`` (typed pre-Raw evidence) followed by
-``services.catalogue_interpretation`` (post-Raw, contract-guided proposals) and
+``services.catalogue_conformance`` (post-Raw, contract-guided proposals) and
 must never import this module.
 """
 import os

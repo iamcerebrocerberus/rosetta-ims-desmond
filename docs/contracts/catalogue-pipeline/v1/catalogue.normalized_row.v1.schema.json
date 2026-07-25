@@ -597,6 +597,118 @@
       "title": "MinimumSpendCondition",
       "type": "object"
     },
+    "NormalizedCatalogueFields": {
+      "additionalProperties": false,
+      "description": "Typed interpretation Rosetta proposes from raw source evidence.",
+      "properties": {
+        "barcode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed barcode."
+        },
+        "brand": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed brand."
+        },
+        "category": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed category."
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed basis-aware supplier cost."
+        },
+        "mbb_terms": {
+          "description": "Proposed MBB terms or tiers.",
+          "items": {
+            "$ref": "#/$defs/MbbTerm"
+          },
+          "title": "Mbb Terms",
+          "type": "array"
+        },
+        "packaging": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackagingProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed packaging configuration."
+        },
+        "product_name": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed product name."
+        },
+        "supplier_sku": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed supplier SKU."
+        },
+        "variant": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed variant."
+        }
+      },
+      "title": "NormalizedCatalogueFields",
+      "type": "object"
+    },
     "PackagingProposal": {
       "additionalProperties": false,
       "description": "Proposed packaging configuration with optional provenance.",
@@ -854,118 +966,6 @@
       "title": "PositiveMoney",
       "type": "object"
     },
-    "ProposedCatalogueFields": {
-      "additionalProperties": false,
-      "description": "Typed interpretation Rosetta proposes from raw source evidence.",
-      "properties": {
-        "barcode": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed barcode."
-        },
-        "brand": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed brand."
-        },
-        "category": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed category."
-        },
-        "cost": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CostProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed basis-aware supplier cost."
-        },
-        "mbb_terms": {
-          "description": "Proposed MBB terms or tiers.",
-          "items": {
-            "$ref": "#/$defs/MbbTerm"
-          },
-          "title": "Mbb Terms",
-          "type": "array"
-        },
-        "packaging": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/PackagingProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed packaging configuration."
-        },
-        "product_name": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed product name."
-        },
-        "supplier_sku": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed supplier SKU."
-        },
-        "variant": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TextProposal"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Proposed variant."
-        }
-      },
-      "title": "ProposedCatalogueFields",
-      "type": "object"
-    },
     "Quantity": {
       "additionalProperties": false,
       "description": "Positive quantity in an explicitly stated UOM.",
@@ -1101,7 +1101,7 @@
       "type": "object"
     }
   },
-  "$id": "https://rosetta-ims.local/contracts/catalogue-pipeline/v1/catalogue.interpreted_claim.v1.schema.json",
+  "$id": "https://rosetta-ims.local/contracts/catalogue-pipeline/v1/catalogue.normalized_row.v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "What business fields Rosetta proposes were present, and what it thinks they mean.",
@@ -1113,10 +1113,10 @@
       "type": "string"
     },
     "contract_version": {
-      "const": "catalogue.interpreted_claim.v1",
+      "const": "catalogue.normalized_row.v1",
       "description": "Exact CIS-103 interpreted claim contract identifier.",
       "enum": [
-        "catalogue.interpreted_claim.v1"
+        "catalogue.normalized_row.v1"
       ],
       "title": "Contract Version",
       "type": "string"
@@ -1132,8 +1132,8 @@
       "title": "Metadata",
       "type": "object"
     },
-    "proposed_fields": {
-      "$ref": "#/$defs/ProposedCatalogueFields",
+    "normalized_fields": {
+      "$ref": "#/$defs/NormalizedCatalogueFields",
       "description": "Typed proposals from parser/model/business rules."
     },
     "raw_fields": {
@@ -1174,10 +1174,10 @@
     "catalogue_item_id",
     "raw_observation_ids",
     "raw_fields",
-    "proposed_fields",
+    "normalized_fields",
     "review_requirement",
     "created_at"
   ],
-  "title": "InterpretedClaimV1",
+  "title": "NormalizedRowV1",
   "type": "object"
 }

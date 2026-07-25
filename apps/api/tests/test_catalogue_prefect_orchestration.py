@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import tempfile
 from io import BytesIO
@@ -36,15 +37,15 @@ from orchestration.catalogue_types import (  # noqa: E402
     TransientProviderError,
 )
 from schemas.catalogue_pipeline.enums import ExtractionMethod, SourceFormat  # noqa: E402
-from schemas.catalogue_pipeline.extracted_evidence_v1 import SourceLocation  # noqa: E402
-from services import catalogue_interpretation  # noqa: E402
+from schemas.catalogue_pipeline.extracted_evidence_v1 import RawCell, SourceLocation  # noqa: E402
+from services import catalogue_evidence_extraction as extraction  # noqa: E402
 from services.catalogue_evidence_extraction import (  # noqa: E402
     ExtractedEvidence,
     ExtractionError,
     ExtractionResult,
     ExtractionStatus,
 )
-from services.catalogue_interpretation import interpret_observations  # noqa: E402
+from services.catalogue_conformance import conform_observations  # noqa: E402
 from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueSubmissionService  # noqa: E402
 
 
@@ -53,15 +54,18 @@ database.seed_category_rules(database.engine)
 
 
 HILLS_ROW_TEXT = "10447 Hill's Healthy Cuisine Chicken 82g HK$13.10 ambiguous offer text"
-HILLS_FIELDS = {
-    "description": "Hill's Healthy Cuisine Chicken 82g",
-    "brand": "Hill's",
-    "supplier_sku": "10447",
-    "cost_price": 13.1,
-    "pack_size": "82g",
-    "variant": "82g",
-    "confidence": "0.96",
-    "bulk_buy_tiers": "ambiguous offer text",
+
+# A deterministic Hill's price-list row keyed EXACTLY by supplier 14's declared
+# source columns. Fed as column-labeled cells (directly, or through the vision
+# provider stub) it maps through the contract with no model in the loop.
+HILLS_ROW = {
+    "Product Code / 產品編號": "10447",
+    "Product Range / 產品系列": "Science Plan",
+    "Life Stage / 生命階段": "Adult",
+    "Product Description / 產品名稱": "Chicken 82g",
+    "Size / 重量": "82g",
+    "Gross Wholesale Price / 每箱·罐": "13.10",
+    "Order Multiple / 訂貨單位": "12",
 }
 
 
@@ -95,8 +99,8 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueInterpretedClaimEvidence,
-        models.CatalogueInterpretedClaim,
+        models.CatalogueNormalizedRowEvidence,
+        models.CatalogueNormalizedRow,
         models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
@@ -205,6 +209,72 @@ def _evidence(
     )
 
 
+def _cell_evidence(
+    row: dict[str, str],
+    *,
+    key: str = "page:1:obs:1",
+    page: int = 1,
+    confidence: str | None = "0.95",
+) -> ExtractedEvidence:
+    """One deterministic vision-style observation carrying column-labeled cells."""
+
+    cells = tuple(
+        RawCell(cell_reference=None, row_number=None, column_name=column, column_index=index, raw_value=value)
+        for index, (column, value) in enumerate(row.items(), start=1)
+    )
+    return ExtractedEvidence(
+        observation_key=key,
+        source_location=SourceLocation(page_number=page, source_object_key=key),
+        raw_cells=cells,
+        extraction_method=ExtractionMethod.MODEL_VISION,
+        provider="google",
+        confidence=confidence,
+    )
+
+
+def _vision_envelope(rows: list[dict[str, str]]) -> str:
+    """Serialize rows as one Gemini vision evidence envelope: one observation per row."""
+
+    return json.dumps(
+        {
+            "page_outcome": "evidence",
+            "observations": [
+                {
+                    "raw_text": None,
+                    "raw_cells": [
+                        {
+                            "cell_reference": None,
+                            "row_number": None,
+                            "column_name": column,
+                            "column_index": index,
+                            "raw_value": value,
+                        }
+                        for index, (column, value) in enumerate(row.items(), start=1)
+                    ],
+                    "bounding_box": {"x": 0, "y": offset, "width": 1, "height": 1, "unit": "px"},
+                    "confidence": "0.95",
+                }
+                for offset, row in enumerate(rows)
+            ],
+        }
+    )
+
+
+def _install_vision(monkeypatch, rows: list[dict[str, str]]) -> None:
+    """Route PDF extraction through a stubbed Gemini vision provider.
+
+    The ``db`` fixture strips provider keys, so every flow test must re-set
+    GEMINI_API_KEY and replace the vision seam with a deterministic envelope.
+    """
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        extraction,
+        "_call_gemini_vision",
+        lambda content, *, media_type: extraction._VisionResponse(text=_vision_envelope(rows)),
+    )
+
+
 def test_source_loader_verifies_file_path_size_signature_and_checksum(db):
     result = _submit(db)
     source = db.query(models.CatalogueSourceDocument).one()
@@ -290,23 +360,6 @@ def test_recorded_contract_resolution_rejects_unsupported_unknown_mismatch_and_d
         resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
 
 
-def test_real_pdf_text_extraction_produces_line_observations(db):
-    result = _submit(db, content=_text_pdf_bytes(["Hill's price list", HILLS_ROW_TEXT]))
-    asset = load_and_verify_source_asset(db, ingestion_run_id=result.ingestion_run_id)
-
-    outcome = extract_source_evidence(asset)
-
-    assert outcome.rejected_units == 0
-    assert outcome.warnings == ()
-    assert [observation.observation_key for observation in outcome.observations] == [
-        "page:1:line:1",
-        "page:1:line:2",
-    ]
-    assert outcome.observations[1].raw_text == HILLS_ROW_TEXT
-    assert outcome.observations[1].extraction_method == ExtractionMethod.PDF_TEXT
-    assert outcome.observations[1].source_location.page_number == 1
-
-
 def test_extraction_policy_maps_partial_and_failed_results(db, monkeypatch):
     result = _submit(db)
     asset = load_and_verify_source_asset(db, ingestion_run_id=result.ingestion_run_id)
@@ -348,64 +401,47 @@ def test_extraction_policy_maps_partial_and_failed_results(db, monkeypatch):
         extract_source_evidence(asset)
 
 
-def test_interpretation_maps_hills_row_and_preserves_unresolved_mbb(db, monkeypatch):
+def test_conformance_maps_hills_row_from_contract_cells(db):
+    # Deterministic conformance: named cells are mapped through supplier 14's
+    # declared source columns with no model in the loop.
     result = _submit(db)
     contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
-    observation = _evidence()
+    observation = _cell_evidence(HILLS_ROW, key="page:1:obs:hills")
     raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {observation.observation_key: dict(HILLS_FIELDS)},
-    )
 
-    outcome = interpret_observations((observation,), (raw_id,), contract)
+    outcome = conform_observations((observation,), (raw_id,), contract)
 
     assert outcome.skipped_count == 0
     item = outcome.items[0]
     assert item.observation_key == observation.observation_key
-    assert item.raw_fields["mbb_text"] == "ambiguous offer text"
-    assert item.raw_fields["cost"] == "13.1"
-    assert item.proposed_fields["mbb_terms"] == []
-    assert item.proposed_fields["supplier_sku"]["value"] == "10447"
-    assert item.proposed_fields["supplier_sku"]["evidence"]["raw_observation_id"] == str(raw_id)
-    assert item.proposed_fields["supplier_sku"]["evidence"]["field_path"] == "/raw_text"
-    assert item.proposed_fields["cost"]["amount"] == "13.1"
-    assert item.proposed_fields["packaging"]["content_amount"] == "82"
-    assert "sellable_units_per_purchase_unit" not in item.proposed_fields["packaging"]
+    assert item.provenance == {"interpreter": "contract_cells"}
+    assert item.raw_fields["cost"] == "13.10"
+    # No bulk-buy tiers: the deterministic path invents none, and no contract
+    # column maps MBB text for this row.
+    assert item.raw_fields["mbb_text"] is None
+    assert item.normalized_fields["mbb_terms"] == []
+    assert item.normalized_fields["supplier_sku"]["value"] == "10447"
+    assert item.normalized_fields["supplier_sku"]["evidence"]["raw_observation_id"] == str(raw_id)
+    assert item.normalized_fields["supplier_sku"]["evidence"]["field_path"] == "/raw_cells"
+    assert item.normalized_fields["product_name"]["value"] == "Science Plan Adult Chicken 82g"
+    assert item.normalized_fields["cost"]["amount"] == "13.10"
+    assert item.normalized_fields["packaging"]["content_amount"] == "82"
+    assert "sellable_units_per_purchase_unit" not in item.normalized_fields["packaging"]
 
 
-def test_interpretation_skips_non_catalogue_rows(db, monkeypatch):
+def test_conformance_skips_header_rows(db):
+    # A header row's cell VALUES repeat the contract's declared source columns;
+    # it is evidence, not a row, so it is skipped while the data row conforms.
     result = _submit(db)
     contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
-    header = _evidence(key="page:1:line:1", text="Supplier SKU | Description | Cost")
-    row = _evidence(key="page:1:line:2")
+    header = _cell_evidence({column: column for column in HILLS_ROW}, key="page:1:obs:header")
+    row = _cell_evidence(HILLS_ROW, key="page:1:obs:row")
     ids = (UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))
 
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {header.observation_key: None, row.observation_key: dict(HILLS_FIELDS)},
-    )
-    outcome = interpret_observations((header, row), ids, contract)
+    outcome = conform_observations((header, row), ids, contract)
+
     assert outcome.skipped_count == 1
     assert [item.observation_key for item in outcome.items] == [row.observation_key]
-
-
-def test_interpretation_degrades_without_provider(db):
-    # Without a configured provider the real seam degrades: nothing is skipped,
-    # nothing is invented, and every observation stages for manual review.
-    result = _submit(db)
-    contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
-    header = _evidence(key="page:1:line:1", text="Supplier SKU | Description | Cost")
-    row = _evidence(key="page:1:line:2")
-    ids = (UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"))
-
-    degraded = interpret_observations((header, row), ids, contract)
-    assert degraded.skipped_count == 0
-    assert len(degraded.items) == 2
-    assert all(item.proposed_fields.get("cost") is None for item in degraded.items)
-    assert any("not configured" in warning for warning in degraded.warnings)
 
 
 def test_lifecycle_claim_and_terminal_replay_are_safe(db):
@@ -439,12 +475,8 @@ def test_flow_unknown_run_returns_sanitized_failure_result(db):
 
 
 def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch):
-    result = _submit(db, content=_text_pdf_bytes([HILLS_ROW_TEXT]))
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {key: dict(HILLS_FIELDS) for key in rows},
-    )
+    result = _submit(db)
+    _install_vision(monkeypatch, [HILLS_ROW])
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
@@ -460,7 +492,7 @@ def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch)
     assert run.started_at is not None
     assert run.completed_at is not None
     assert db.query(models.CatalogueExtractedEvidence).count() == 1
-    assert db.query(models.CatalogueInterpretedClaim).count() == 1
+    assert db.query(models.CatalogueNormalizedRow).count() == 1
     candidate = db.query(models.CatalogueMasteringCandidate).one()
     assert candidate.review_status == "PENDING_REVIEW"
     assert db.query(models.CatalogueReviewDecision).count() == 0
@@ -473,28 +505,23 @@ def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch)
 
 
 def test_flow_records_blocking_validation_and_skips_candidate(db, monkeypatch):
-    quoted_row = "Q-1 Quoted item By Quote"
+    # A "By Quote" price is observed (raw cost present) but is deterministically
+    # unresolvable to an amount, so the cost basis is unresolved and the row is
+    # blocked from candidacy.
+    quoted_row = {
+        "Order Code": "Q-1",
+        "Product Name": "Quoted item",
+        "Brand": "Alfamedic",
+        "Packing / Unit": "1 piece",
+        "Price/ Unit (HKD)": "By Quote",
+    }
     result = _submit(
         db,
         supplier_id=1,
         contract_id="alfamedic.price_list.v1",
         contract_version="v1",
-        content=_text_pdf_bytes([quoted_row]),
     )
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {
-            key: {
-                "description": "Quoted item",
-                "supplier_sku": "Q-1",
-                "cost_price": "By Quote",
-                "pack_size": "1 piece",
-                "confidence": "0.8",
-            }
-            for key in rows
-        },
-    )
+    _install_vision(monkeypatch, [quoted_row])
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
@@ -504,20 +531,6 @@ def test_flow_records_blocking_validation_and_skips_candidate(db, monkeypatch):
     issue = db.query(models.CatalogueValidationIssue).one()
     assert issue.issue_code == "STAGING_COST_BASIS_UNRESOLVED"
     assert issue.publish_blocking == 1
-
-
-def test_flow_without_interpretation_provider_stages_everything_for_review(db):
-    result = _submit(db, content=_text_pdf_bytes([HILLS_ROW_TEXT]))
-
-    flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
-
-    assert flow_result.terminal_status == "completed_with_warnings"
-    assert flow_result.rows_extracted == 1
-    assert flow_result.staging_items_created == 1
-    assert flow_result.mastering_candidates_created == 1
-    assert any("not configured" in warning for warning in flow_result.warnings)
-    staging = db.query(models.CatalogueInterpretedClaim).one()
-    assert staging.review_requirement in {"NOT_REQUIRED", "RECOMMENDED", "REQUIRED"}
 
 
 def test_flow_failure_is_sanitized_and_durable(db, monkeypatch):
@@ -568,12 +581,13 @@ def _run_status(db, run_id):
 
 
 def _no_downstream(db):
-    assert db.query(models.CatalogueInterpretedClaim).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
     assert db.query(models.CatalogueMasteringCandidate).count() == 0
 
 
 def test_stage_error_during_capture_fails_the_run_not_running(db, monkeypatch):
-    result = _submit(db, content=_text_pdf_bytes([HILLS_ROW_TEXT]))
+    result = _submit(db)
+    _install_vision(monkeypatch, [HILLS_ROW])
 
     def boom(_self, _command):
         raise stages.IdempotencyConflict("extracted evidence observation already exists with different material input")
@@ -589,7 +603,8 @@ def test_stage_error_during_capture_fails_the_run_not_running(db, monkeypatch):
 
 
 def test_unexpected_persistence_error_fails_the_run_with_sanitized_status(db, monkeypatch):
-    result = _submit(db, content=_text_pdf_bytes([HILLS_ROW_TEXT]))
+    result = _submit(db)
+    _install_vision(monkeypatch, [HILLS_ROW])
 
     def kaboom(*_a, **_k):
         raise RuntimeError("psycopg2 connection reset: secret-dsn=postgres://user:pw@host/db")
@@ -615,7 +630,7 @@ def test_envelope_validation_error_during_interpretation_fails_the_run(db, monke
     def bad_interpret(*_a, **_k):
         raise ValueError("evidence envelope invalid")
 
-    monkeypatch.setattr(catalogue_flows, "interpret_raw_evidence_task", bad_interpret)
+    monkeypatch.setattr(catalogue_flows, "normalize_evidence_task", bad_interpret)
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
@@ -669,136 +684,38 @@ def test_transient_provider_error_is_typed_and_retryable_non_transient_is_not(db
         )
 
 
-# ── Intermediate 5-6 corrections: grounding, provenance, accounting, seam ───
+# ── Deterministic conformance accounting: contract currency + run metrics ───
 
 
-def test_ungrounded_model_values_are_dropped_flagged_and_routed_to_review(db, monkeypatch):
+def test_cost_currency_comes_from_the_supplier_contract_not_a_default(db):
     result = _submit(db)
     contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
-    observation = _evidence()  # raw text: HILLS_ROW_TEXT
+    observation = _cell_evidence(HILLS_ROW)
     raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-    invented = dict(HILLS_FIELDS)
-    invented["barcode"] = "052742104470"      # not present in the row text
-    invented["category"] = "Food"             # not present in the row text
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {observation.observation_key: invented},
-    )
 
-    outcome = interpret_observations((observation,), (raw_id,), contract)
+    outcome = conform_observations((observation,), (raw_id,), contract)
 
-    item = outcome.items[0]
-    # Grounded values survive; invented values are dropped, never kept.
-    assert item.proposed_fields["supplier_sku"]["value"] == "10447"
-    assert "barcode" not in item.proposed_fields
-    assert "category" not in item.proposed_fields
-    assert item.raw_fields["barcode"] is None
-    assert sorted(item.provenance["grounding_dropped"]) == ["barcode", "category"]
-    assert any("grounding check" in warning for warning in outcome.warnings)
-    assert outcome.metadata["grounding_dropped_total"] == 2
-
-    # A trimmed claim must reach humans: the staging command forces REQUIRED.
-    from orchestration.catalogue_stage_adapter import claim_command_from_interpretation
-    from schemas.catalogue_pipeline.enums import ReviewRequirement
-
-    command = claim_command_from_interpretation(item)
-    assert command.review_requirement == ReviewRequirement.REQUIRED
-    assert command.metadata["interpretation"]["interpreter"] == "model"
-
-
-def test_cost_currency_comes_from_the_supplier_contract_not_a_default(db, monkeypatch):
-    result = _submit(db)
-    contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
-    observation = _evidence()
-    raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {observation.observation_key: dict(HILLS_FIELDS)},
-    )
-
-    outcome = interpret_observations((observation,), (raw_id,), contract)
-
-    proposal = outcome.items[0].proposed_fields["cost"]
+    proposal = outcome.items[0].normalized_fields["cost"]
+    # Currency is a CONTRACT declaration (HKD), never a conformance default.
     assert proposal["currency"] == contract.declaration.pricing.currency
-
-
-def test_interpreter_provenance_is_recorded_for_model_cells_and_degraded_paths(db, monkeypatch):
-    result = _submit(db)
-    contract = resolve_recorded_supplier_contract(db, ingestion_run_id=result.ingestion_run_id)
-    raw_id = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-
-    # Model path
-    text_row = _evidence()
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: {text_row.observation_key: dict(HILLS_FIELDS)},
-    )
-    model_outcome = interpret_observations((text_row,), (raw_id,), contract)
-    assert model_outcome.items[0].provenance["interpreter"] == "model"
-    assert model_outcome.items[0].provenance["model"] == catalogue_interpretation.INTERPRETATION_MODEL
-
-    # Degraded path (provider unavailable): interpreter "none" and REQUIRED review.
-    monkeypatch.setattr(
-        catalogue_interpretation,
-        "_model_interpret_rows",
-        lambda rows, _contract: (_ for _ in ()).throw(
-            catalogue_interpretation.InterpretationUnavailable("no provider configured")
-        ),
-    )
-    degraded = interpret_observations((text_row,), (raw_id,), contract)
-    assert degraded.items[0].provenance == {"interpreter": "none", "degraded": True}
-    assert degraded.metadata["degraded"] is True
-    from orchestration.catalogue_stage_adapter import claim_command_from_interpretation
-    from schemas.catalogue_pipeline.enums import ReviewRequirement
-
-    assert claim_command_from_interpretation(degraded.items[0]).review_requirement == ReviewRequirement.REQUIRED
+    assert proposal["currency"] == "HKD"
 
 
 def test_flow_persists_interpretation_accounting_in_run_metrics(db, monkeypatch):
-    import json as _json
-
-    result = _submit(db, content=_text_pdf_bytes(["Hill's price list header", HILLS_ROW_TEXT]))
-
-    def verdicts(rows, _contract):
-        return {
-            key: (dict(HILLS_FIELDS) if "hk$13.10" in text.casefold() else None)
-            for key, text in rows.items()
-        }
-
-    monkeypatch.setattr(catalogue_interpretation, "_model_interpret_rows", verdicts)
+    # One header row (skipped as evidence) + one data row (conformed): the run's
+    # durable metrics record the deterministic conformance accounting.
+    header = {column: column for column in HILLS_ROW}
+    result = _submit(db)
+    _install_vision(monkeypatch, [header, HILLS_ROW])
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
     assert flow_result.rows_interpreted == 1
     assert flow_result.rows_skipped_non_catalogue == 1
+    assert flow_result.interpretation_degraded is False
     db.expire_all()
     run = db.query(models.IngestionRun).one()
-    metrics = _json.loads(run.metrics)
+    metrics = json.loads(run.metrics)
     assert metrics["rows_interpreted"] == 1
     assert metrics["rows_skipped_non_catalogue"] == 1
     assert metrics["interpretation_degraded"] is False
-
-
-def test_interpretation_seam_uses_typed_sdk_exception_classification():
-    import anthropic
-    import httpx
-
-    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
-
-    transient = catalogue_interpretation._classify_interpretation_failure(
-        anthropic.APITimeoutError(request=request)
-    )
-    assert isinstance(transient, catalogue_interpretation.InterpretationTransientError)
-
-    unavailable = catalogue_interpretation._classify_interpretation_failure(
-        anthropic.AuthenticationError("bad key", response=httpx.Response(401, request=request), body=None)
-    )
-    assert isinstance(unavailable, catalogue_interpretation.InterpretationUnavailable)
-
-    provider = catalogue_interpretation._classify_interpretation_failure(
-        anthropic.BadRequestError("schema", response=httpx.Response(400, request=request), body=None)
-    )
-    assert isinstance(provider, catalogue_interpretation.InterpretationProviderError)

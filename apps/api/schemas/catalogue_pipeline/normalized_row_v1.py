@@ -20,7 +20,7 @@ from .common import (
 from .enums import ReviewRequirement
 
 
-CONTRACT_ID = "catalogue.interpreted_claim.v1"
+CONTRACT_ID = "catalogue.normalized_row.v1"
 
 
 class ClaimRawFields(ContractModel):
@@ -39,7 +39,7 @@ class ClaimRawFields(ContractModel):
     source_row_label: str | None = Field(None, description="Human-readable source row label when useful.")
 
 
-class ProposedCatalogueFields(ContractModel):
+class NormalizedCatalogueFields(ContractModel):
     """Typed interpretation Rosetta proposes from raw source evidence."""
 
     supplier_sku: TextProposal | None = Field(None, description="Proposed supplier SKU.")
@@ -53,12 +53,12 @@ class ProposedCatalogueFields(ContractModel):
     mbb_terms: list[MbbTerm] = Field(default_factory=list, description="Proposed MBB terms or tiers.")
 
 
-class InterpretedClaimV1(ContractModel):
+class NormalizedRowV1(ContractModel):
     """What business fields Rosetta proposes were present, and what it thinks they mean."""
 
     contract_id = CONTRACT_ID
 
-    contract_version: Literal["catalogue.interpreted_claim.v1"] = Field(
+    contract_version: Literal["catalogue.normalized_row.v1"] = Field(
         ...,
         description="Exact CIS-103 interpreted claim contract identifier.",
     )
@@ -66,7 +66,7 @@ class InterpretedClaimV1(ContractModel):
     catalogue_item_id: UUID = Field(..., description="interpreted claim pipeline identity.")
     raw_observation_ids: list[UUID] = Field(..., min_length=1, description="Raw observations supporting this staged item.")
     raw_fields: ClaimRawFields = Field(..., description="Source strings preserved as evidence.")
-    proposed_fields: ProposedCatalogueFields = Field(..., description="Typed proposals from parser/model/business rules.")
+    normalized_fields: NormalizedCatalogueFields = Field(..., description="Typed proposals from parser/model/business rules.")
     review_requirement: ReviewRequirement = Field(..., description="Whether business review is needed.")
     validation_issue_ids: list[UUID] = Field(default_factory=list, description="Validation issues associated with the staged item.")
     created_at: datetime = Field(..., description="Timezone-aware creation timestamp.")
@@ -81,4 +81,4 @@ class InterpretedClaimV1(ContractModel):
         return self
 
 
-register_contract(InterpretedClaimV1)
+register_contract(NormalizedRowV1)

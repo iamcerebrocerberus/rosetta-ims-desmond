@@ -297,8 +297,8 @@ class PipelineContractMapping(SupplierSourceModel):
         "catalogue.extracted_evidence.v1",
         description="Shared extracted evidence observation contract produced from source evidence.",
     )
-    staging_item_contract_id: Literal["catalogue.interpreted_claim.v1"] = Field(
-        "catalogue.interpreted_claim.v1",
+    staging_item_contract_id: Literal["catalogue.normalized_row.v1"] = Field(
+        "catalogue.normalized_row.v1",
         description="Shared interpreted claim contract receiving proposed interpretations.",
     )
     raw_observation_fields: list[str] = Field(..., min_length=1, description="Source field keys preserved as raw evidence.")
@@ -306,7 +306,7 @@ class PipelineContractMapping(SupplierSourceModel):
     staging_proposed_field_keys: list[str] = Field(
         ...,
         min_length=1,
-        description="Source field keys interpreted into staging.proposed_fields.",
+        description="Source field keys interpreted into staging.normalized_fields.",
     )
 
 

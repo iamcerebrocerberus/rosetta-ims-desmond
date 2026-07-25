@@ -326,17 +326,17 @@
           "type": "array"
         },
         "staging_item_contract_id": {
-          "const": "catalogue.interpreted_claim.v1",
-          "default": "catalogue.interpreted_claim.v1",
+          "const": "catalogue.normalized_row.v1",
+          "default": "catalogue.normalized_row.v1",
           "description": "Shared interpreted claim contract receiving proposed interpretations.",
           "enum": [
-            "catalogue.interpreted_claim.v1"
+            "catalogue.normalized_row.v1"
           ],
           "title": "Staging Item Contract Id",
           "type": "string"
         },
         "staging_proposed_field_keys": {
-          "description": "Source field keys interpreted into staging.proposed_fields.",
+          "description": "Source field keys interpreted into staging.normalized_fields.",
           "items": {
             "type": "string"
           },

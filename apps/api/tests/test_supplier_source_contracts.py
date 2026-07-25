@@ -78,7 +78,7 @@ def test_valid_supplier_source_fixtures_validate_and_are_registered(path):
     assert contract.schema_version == "catalogue.supplier_source_contract.v1"
     assert contract.contract_id.endswith(f".{contract.contract_version}")
     assert contract.pipeline_mapping.raw_observation_contract_id == "catalogue.extracted_evidence.v1"
-    assert contract.pipeline_mapping.staging_item_contract_id == "catalogue.interpreted_claim.v1"
+    assert contract.pipeline_mapping.staging_item_contract_id == "catalogue.normalized_row.v1"
 
 
 @pytest.mark.parametrize("path", INVALID_FIXTURES, ids=lambda p: p.name)
@@ -100,7 +100,7 @@ def test_supplier_source_registry_is_deterministic_and_separate_from_pipeline_re
     assert set(pipeline_registry_snapshot()) == {
         "catalogue.extraction_profile.v1",
         "catalogue.extracted_evidence.v1",
-        "catalogue.interpreted_claim.v1",
+        "catalogue.normalized_row.v1",
         "catalogue.mastering_candidate.v1",
         "catalogue.validation_issue.v1",
         "catalogue.serving_item.v1",

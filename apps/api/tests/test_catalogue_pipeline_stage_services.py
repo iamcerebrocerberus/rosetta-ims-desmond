@@ -51,8 +51,8 @@ def _reset(session):
         models.CatalogueReviewDecision,
         models.CatalogueMasteringCandidate,
         models.CatalogueValidationIssue,
-        models.CatalogueInterpretedClaimEvidence,
-        models.CatalogueInterpretedClaim,
+        models.CatalogueNormalizedRowEvidence,
+        models.CatalogueNormalizedRow,
         models.CatalogueExtractedEvidence,
         models.IngestionRun,
         models.CatalogueSourceDocument,
@@ -166,7 +166,7 @@ def _raw_fields(cost="13.10 HKD per can", packaging="24/2.9 oz"):
     }
 
 
-def _proposed_fields(raw_id: UUID, *, include_cost=True, include_packaging=True):
+def _normalized_fields(raw_id: UUID, *, include_cost=True, include_packaging=True):
     evidence = {"raw_observation_id": str(raw_id), "field_path": "/raw_text", "confidence": "0.96"}
     proposed = {
         "supplier_sku": {"value": "10447", "evidence": evidence},
@@ -200,11 +200,11 @@ def _proposed_fields(raw_id: UUID, *, include_cost=True, include_packaging=True)
 
 
 def _build_claim(db, raw_id: UUID, *, include_cost=True, include_packaging=True, key="stage-row-1"):
-    return stages.InterpretedClaimService(db).build_item(
-        stages.BuildInterpretedClaimCommand(
+    return stages.NormalizedRowService(db).build_item(
+        stages.BuildNormalizedRowCommand(
             raw_observation_ids=(raw_id,),
             raw_fields=_raw_fields(),
-            proposed_fields=_proposed_fields(raw_id, include_cost=include_cost, include_packaging=include_packaging),
+            normalized_fields=_normalized_fields(raw_id, include_cost=include_cost, include_packaging=include_packaging),
             idempotency_key=key,
         )
     ).output_ids[0]
@@ -311,36 +311,36 @@ def test_staging_preserves_lineage_and_rejects_cross_run_grouping(db):
     raw_1 = _capture_raw(db)
     raw_2 = _capture_raw(db, run_id=RUN_ID_2, source_id=SOURCE_ID_2, file_id=FILE_ID_2, key="row-2")
 
-    result = stages.InterpretedClaimService(db).build_item(
-        stages.BuildInterpretedClaimCommand(
+    result = stages.NormalizedRowService(db).build_item(
+        stages.BuildNormalizedRowCommand(
             raw_observation_ids=(raw_1,),
             raw_fields=_raw_fields(),
-            proposed_fields=_proposed_fields(raw_1),
+            normalized_fields=_normalized_fields(raw_1),
             idempotency_key="stage-row-1",
         )
     )
 
     assert result.metrics.created_count == 1
-    staging = db.query(models.CatalogueInterpretedClaim).one()
-    assert staging.raw_fields_json != staging.proposed_fields_json
-    assert db.query(models.CatalogueInterpretedClaimEvidence).filter_by(raw_observation_uuid=str(raw_1)).count() == 1
+    staging = db.query(models.CatalogueNormalizedRow).one()
+    assert staging.raw_fields_json != staging.normalized_fields_json
+    assert db.query(models.CatalogueNormalizedRowEvidence).filter_by(raw_observation_uuid=str(raw_1)).count() == 1
 
     with pytest.raises(stages.MissingOrIncompatibleLineage, match="different ingestion runs"):
-        stages.InterpretedClaimService(db).build_item(
-            stages.BuildInterpretedClaimCommand(
+        stages.NormalizedRowService(db).build_item(
+            stages.BuildNormalizedRowCommand(
                 raw_observation_ids=(raw_1, raw_2),
                 raw_fields=_raw_fields(),
-                proposed_fields=_proposed_fields(raw_1),
+                normalized_fields=_normalized_fields(raw_1),
                 idempotency_key="stage-cross-run",
             )
         )
 
     with pytest.raises(stages.MissingOrIncompatibleLineage, match="duplicates"):
-        stages.InterpretedClaimService(db).build_item(
-            stages.BuildInterpretedClaimCommand(
+        stages.NormalizedRowService(db).build_item(
+            stages.BuildNormalizedRowCommand(
                 raw_observation_ids=(raw_1, raw_1),
                 raw_fields=_raw_fields(),
-                proposed_fields=_proposed_fields(raw_1),
+                normalized_fields=_normalized_fields(raw_1),
                 idempotency_key="stage-dupe",
             )
         )
@@ -352,8 +352,8 @@ def test_validation_dedupes_resolves_and_blocks_mastering_until_resolved(db):
     staging_id = _build_claim(db, raw_id, include_cost=False, include_packaging=False)
 
     validation = stages.CatalogueValidationService(db)
-    first = validation.evaluate_claim(stages.EvaluateInterpretedClaimCommand(catalogue_item_id=staging_id))
-    second = validation.evaluate_claim(stages.EvaluateInterpretedClaimCommand(catalogue_item_id=staging_id))
+    first = validation.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
+    second = validation.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
 
     assert first.metrics.created_count == 2
     assert second.metrics.reused_count == 2
@@ -491,11 +491,11 @@ def test_review_rejects_stale_candidate_revision_and_staging_key_conflicts(db):
         )
 
     with pytest.raises(stages.IdempotencyConflict):
-        stages.InterpretedClaimService(db).build_item(
-            stages.BuildInterpretedClaimCommand(
+        stages.NormalizedRowService(db).build_item(
+            stages.BuildNormalizedRowCommand(
                 raw_observation_ids=(raw_id,),
                 raw_fields={**_raw_fields(), "product_name": "Changed"},
-                proposed_fields=_proposed_fields(raw_id),
+                normalized_fields=_normalized_fields(raw_id),
                 idempotency_key="stage-row-1",
             )
         )
@@ -774,8 +774,8 @@ def test_reordered_replay_batch_is_fully_reused(db):
 import copy  # noqa: E402
 
 from orchestration.catalogue_stage_adapter import evidence_from_persisted_observation  # noqa: E402
-from orchestration.catalogue_tasks import build_interpreted_claims_task  # noqa: E402
-from services.catalogue_interpretation import InterpretationOutcome, InterpretedItem  # noqa: E402
+from orchestration.catalogue_tasks import build_normalized_rows_task  # noqa: E402
+from services.catalogue_conformance import ConformanceOutcome, ConformedRow  # noqa: E402
 
 
 def test_interpretation_input_reconstructs_faithfully_from_persisted_evidence(db):
@@ -797,41 +797,41 @@ def test_claim_batch_is_atomic_no_partial_claims_on_failure(db):
     _seed_context(db)
     raw_id = _capture_raw(db, key="claim-batch-1")
 
-    good = InterpretedItem(
+    good = ConformedRow(
         observation_key="claim-batch-1",
         raw_observation_id=raw_id,
         raw_fields=_raw_fields(),
-        proposed_fields=_proposed_fields(raw_id),
+        normalized_fields=_normalized_fields(raw_id),
         provenance={"interpreter": "model"},
     )
-    bad = InterpretedItem(
+    bad = ConformedRow(
         observation_key="claim-batch-2",
         raw_observation_id=raw_id,
         raw_fields=_raw_fields(),
-        proposed_fields={"cost": {"amount": "not-a-number", "currency": "HKD"}},
+        normalized_fields={"cost": {"amount": "not-a-number", "currency": "HKD"}},
         provenance={"interpreter": "model"},
     )
 
     with pytest.raises(Exception):
-        build_interpreted_claims_task.fn(InterpretationOutcome(items=(good, bad)))
+        build_normalized_rows_task.fn(ConformanceOutcome(items=(good, bad)))
 
-    assert db.query(models.CatalogueInterpretedClaim).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
 
 
 def test_claim_replay_with_confidence_drift_reuses_the_immutable_first_claim(db):
     _seed_context(db)
     raw_id = _capture_raw(db, key="claim-replay-1")
-    service = stages.InterpretedClaimService(db)
+    service = stages.NormalizedRowService(db)
 
     def _command(confidence: str):
-        proposed = copy.deepcopy(_proposed_fields(raw_id))
+        proposed = copy.deepcopy(_normalized_fields(raw_id))
         for value in proposed.values():
             if isinstance(value, dict) and isinstance(value.get("evidence"), dict):
                 value["evidence"]["confidence"] = confidence
-        return stages.BuildInterpretedClaimCommand(
+        return stages.BuildNormalizedRowCommand(
             raw_observation_ids=(raw_id,),
             raw_fields=_raw_fields(),
-            proposed_fields=proposed,
+            normalized_fields=proposed,
             idempotency_key="claim-replay-1",
             metadata={"source_observation_key": "claim-replay-1", "interpretation": {"interpreter": "model"}},
         )
@@ -841,16 +841,16 @@ def test_claim_replay_with_confidence_drift_reuses_the_immutable_first_claim(db)
 
     assert first.output_ids == replay.output_ids
     assert replay.metrics.reused_count == 1
-    assert db.query(models.CatalogueInterpretedClaim).count() == 1
+    assert db.query(models.CatalogueNormalizedRow).count() == 1
     # Genuine proposal drift under the same identity stays a controlled conflict.
-    drifted = copy.deepcopy(_proposed_fields(raw_id))
+    drifted = copy.deepcopy(_normalized_fields(raw_id))
     drifted["product_name"]["value"] = "A Different Product Name"
     with pytest.raises(stages.IdempotencyConflict):
         service.build_item(
-            stages.BuildInterpretedClaimCommand(
+            stages.BuildNormalizedRowCommand(
                 raw_observation_ids=(raw_id,),
                 raw_fields=_raw_fields(),
-                proposed_fields=drifted,
+                normalized_fields=drifted,
                 idempotency_key="claim-replay-1",
                 metadata={"source_observation_key": "claim-replay-1", "interpretation": {"interpreter": "model"}},
             )

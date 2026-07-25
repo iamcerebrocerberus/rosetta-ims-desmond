@@ -2,7 +2,7 @@
 
 Extraction here is deliberately contract-independent: it records what the
 source contains and where. The resolved supplier-source contract is applied
-after Raw persistence by ``services.catalogue_interpretation``.
+after Raw persistence by ``services.catalogue_conformance``.
 """
 
 from __future__ import annotations

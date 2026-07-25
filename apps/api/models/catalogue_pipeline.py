@@ -171,7 +171,7 @@ class CatalogueExtractedEvidence(Base):
     source_document = relationship("CatalogueSourceDocument", foreign_keys=[source_document_id], viewonly=True)
 
 
-class CatalogueInterpretedClaim(Base):
+class CatalogueNormalizedRow(Base):
     """Interpreted claim (timeline step 6, INTERMEDIATE layer).
 
     Historical name: these rows are NOT the Staging layer (extracted
@@ -179,13 +179,13 @@ class CatalogueInterpretedClaim(Base):
     the evidence MEANS. Rename tracked in docs/technical-debt/
     rename-staging-item-to-interpreted-claim.md. Original docstring: Raw source-field snapshot plus typed proposed interpretation."""
 
-    __tablename__ = "catalogue_interpreted_claims"
+    __tablename__ = "catalogue_normalized_rows"
     __table_args__ = (
-        UniqueConstraint("catalogue_item_uuid", name="uq_interpreted_claims_uuid"),
+        UniqueConstraint("catalogue_item_uuid", name="uq_normalized_rows_uuid"),
         CheckConstraint("review_requirement IN ('NOT_REQUIRED','RECOMMENDED','REQUIRED','BLOCKING')", name="ck_staging_review_requirement"),
         CheckConstraint("stage_status IN ('PROPOSED','NEEDS_REVIEW','APPROVED','REJECTED','SUPERSEDED')", name="ck_staging_status"),
-        Index("ix_interpreted_claims_run_status", "ingestion_run_uuid", "stage_status", "review_requirement"),
-        Index("ix_interpreted_claims_catalogue", "supplier_catalogue_uuid"),
+        Index("ix_normalized_rows_run_status", "ingestion_run_uuid", "stage_status", "review_requirement"),
+        Index("ix_normalized_rows_catalogue", "supplier_catalogue_uuid"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -197,7 +197,7 @@ class CatalogueInterpretedClaim(Base):
     extraction_profile_id = Column(String, nullable=False)
     extraction_profile_version = Column(String, nullable=False)
     raw_fields_json = Column(Text, nullable=False)
-    proposed_fields_json = Column(Text, nullable=False)
+    normalized_fields_json = Column(Text, nullable=False)
     review_requirement = Column(String, nullable=False)
     stage_status = Column(String, nullable=False, default="PROPOSED")
     validation_issue_ids_json = Column(Text, nullable=True)
@@ -205,29 +205,29 @@ class CatalogueInterpretedClaim(Base):
     metadata_json = Column(Text, nullable=True)
 
     raw_observation_links = relationship(
-        "CatalogueInterpretedClaimEvidence",
+        "CatalogueNormalizedRowEvidence",
         back_populates="staging_item",
         cascade="all, delete-orphan",
-        order_by="CatalogueInterpretedClaimEvidence.sort_order",
+        order_by="CatalogueNormalizedRowEvidence.sort_order",
     )
 
 
-class CatalogueInterpretedClaimEvidence(Base):
+class CatalogueNormalizedRowEvidence(Base):
     """Many-to-many lineage from interpreted claims to extracted evidence observations."""
 
-    __tablename__ = "catalogue_interpreted_claim_evidence"
+    __tablename__ = "catalogue_normalized_row_evidence"
     __table_args__ = (
         UniqueConstraint("staging_item_id", "raw_observation_id", name="uq_staging_extracted_evidence_link"),
         Index("ix_staging_extracted_evidence_raw_uuid", "raw_observation_uuid"),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    staging_item_id = Column(Integer, ForeignKey("catalogue_interpreted_claims.id"), nullable=False)
+    staging_item_id = Column(Integer, ForeignKey("catalogue_normalized_rows.id"), nullable=False)
     raw_observation_id = Column(Integer, ForeignKey("catalogue_extracted_evidence.id"), nullable=False)
     raw_observation_uuid = Column(String(36), nullable=False)
     sort_order = Column(Integer, nullable=False, default=0)
 
-    staging_item = relationship("CatalogueInterpretedClaim", back_populates="raw_observation_links")
+    staging_item = relationship("CatalogueNormalizedRow", back_populates="raw_observation_links")
     raw_observation = relationship("CatalogueExtractedEvidence", foreign_keys=[raw_observation_id], viewonly=True)
 
 
@@ -610,8 +610,8 @@ class CatalogueServingPublication(Base):
 __all__ = [
     "CatalogueSourceDocument",
     "CatalogueExtractedEvidence",
-    "CatalogueInterpretedClaim",
-    "CatalogueInterpretedClaimEvidence",
+    "CatalogueNormalizedRow",
+    "CatalogueNormalizedRowEvidence",
     "CatalogueValidationIssue",
     "CatalogueMasteringCandidate",
     "CatalogueReviewDecision",

@@ -10,7 +10,7 @@
   "message": "The source lists both case and can quantities; Rosetta needs confirmation of the price basis.",
   "created_at": "2026-07-22T00:20:00Z",
   "resolution_status": "OPEN",
-  "field_path": "/proposed_fields/cost/price_basis",
+  "field_path": "/normalized_fields/cost/price_basis",
   "raw_value": "HK$13.10; 24/2.9 oz",
   "proposed_value": "CAN",
   "expected_value": "Confirm whether HK$13.10 prices one can or one case.",

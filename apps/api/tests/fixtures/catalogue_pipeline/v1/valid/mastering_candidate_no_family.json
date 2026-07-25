@@ -20,7 +20,7 @@
       "22222222-2222-4222-8222-222222222221"
     ],
     "field_paths": [
-      "/proposed_fields"
+      "/normalized_fields"
     ],
     "review_decision_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
   },
@@ -33,7 +33,7 @@
         "22222222-2222-4222-8222-222222222221"
       ],
       "field_paths": [
-        "/proposed_fields/supplier_sku"
+        "/normalized_fields/supplier_sku"
       ],
       "review_decision_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     },
@@ -52,7 +52,7 @@
         "22222222-2222-4222-8222-222222222221"
       ],
       "field_paths": [
-        "/proposed_fields/product_name"
+        "/normalized_fields/product_name"
       ],
       "review_decision_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     },
@@ -72,7 +72,7 @@
         "22222222-2222-4222-8222-222222222221"
       ],
       "field_paths": [
-        "/proposed_fields/packaging"
+        "/normalized_fields/packaging"
       ],
       "review_decision_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     },
@@ -112,7 +112,7 @@
         "22222222-2222-4222-8222-222222222221"
       ],
       "field_paths": [
-        "/proposed_fields/cost"
+        "/normalized_fields/cost"
       ],
       "review_decision_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     },
@@ -136,7 +136,7 @@
         "22222222-2222-4222-8222-222222222221"
       ],
       "field_paths": [
-        "/proposed_fields/mbb_terms"
+        "/normalized_fields/mbb_terms"
       ],
       "review_decision_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     },

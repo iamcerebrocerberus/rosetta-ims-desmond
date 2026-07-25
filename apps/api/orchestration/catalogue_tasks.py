@@ -9,10 +9,9 @@ from prefect import get_run_logger, task
 import database
 import models
 from services import catalogue_pipeline_stages as stages
-from services.catalogue_interpretation import (
-    InterpretationOutcome,
-    InterpretationTransientError,
-    interpret_observations,
+from services.catalogue_conformance import (
+    ConformanceOutcome,
+    conform_observations,
 )
 
 from .catalogue_contract_resolution import resolve_recorded_supplier_contract
@@ -24,7 +23,7 @@ from .catalogue_stage_adapter import (
     evidence_from_persisted_observation,
     mastering_command_for_claim,
     raw_input_from_extracted_evidence,
-    claim_command_from_interpretation,
+    normalized_row_command_from_conformance,
 )
 from .catalogue_types import (
     CatalogueFlowResult,
@@ -131,21 +130,17 @@ def capture_extracted_evidence_task(
         db.close()
 
 
-@task(
-    name="interpret-raw-evidence",
-    retries=2,
-    retry_delay_seconds=10,
-    retry_condition_fn=_retry_transient_provider,
-)
-def interpret_raw_evidence_task(
+@task(name="conform-evidence-to-normalized-rows", retries=0)
+def normalize_evidence_task(
     raw_observation_ids: tuple[UUID, ...],
     runtime_contract,
-) -> InterpretationOutcome:
-    """Intermediate handoff: interpret PERSISTED step-4 evidence by durable ID.
+) -> ConformanceOutcome:
+    """Staging conformance: map PERSISTED step-4 evidence to normalized rows by durable ID.
 
     Reloads each observation from persistence — never the extraction task's
-    in-memory objects — so interpretation is grounded against exactly what
-    Stage 4 committed.
+    in-memory objects — so conformance is grounded against exactly what the
+    Staging layer committed. Deterministic: the supplier contract maps source
+    columns to fields; no model provider is reachable from this task.
     """
 
     from services import catalogue_pipeline_persistence as persistence
@@ -164,29 +159,26 @@ def interpret_raw_evidence_task(
             observations.append(evidence_from_persisted_observation(persistence.extracted_evidence_to_contract(row)))
     finally:
         db.close()
-    try:
-        return interpret_observations(tuple(observations), tuple(raw_observation_ids), runtime_contract)
-    except InterpretationTransientError as exc:
-        raise TransientProviderError(str(exc)) from exc
+    return conform_observations(tuple(observations), tuple(raw_observation_ids), runtime_contract)
 
 
-@task(name="build-interpreted-claims", retries=0)
-def build_interpreted_claims_task(
-    interpretation: InterpretationOutcome,
+@task(name="build-normalized-rows", retries=0)
+def build_normalized_rows_task(
+    conformance: ConformanceOutcome,
 ) -> tuple[tuple[UUID, ...], int, int]:
-    """Persist interpreted claims (step 6) as one ATOMIC batch.
+    """Persist normalized rows (Staging output) as one ATOMIC batch.
 
     Each build stages within the shared transaction and a single commit
-    lands the whole batch — a mid-batch failure leaves no partial claims.
+    lands the whole batch — a mid-batch failure leaves no partial rows.
     """
 
     db = database.SessionLocal()
     try:
-        service = stages.InterpretedClaimService(db, commit=False)
+        service = stages.NormalizedRowService(db, commit=False)
         output_ids: list[UUID] = []
         created = reused = 0
-        for item in interpretation.items:
-            result = service.build_item(claim_command_from_interpretation(item))
+        for item in conformance.items:
+            result = service.build_item(normalized_row_command_from_conformance(item))
             output_ids.extend(UUID(str(output_id)) for output_id in result.output_ids)
             created += result.metrics.created_count
             reused += result.metrics.reused_count
@@ -199,14 +191,14 @@ def build_interpreted_claims_task(
         db.close()
 
 
-@task(name="evaluate-interpreted-claims", retries=0)
-def evaluate_interpreted_claims_task(staging_ids: tuple[UUID, ...]) -> tuple[int, int, int]:
+@task(name="evaluate-normalized-rows", retries=0)
+def evaluate_normalized_rows_task(staging_ids: tuple[UUID, ...]) -> tuple[int, int, int]:
     db = database.SessionLocal()
     try:
         service = stages.CatalogueValidationService(db)
         created = reused = blocking = 0
         for staging_id in staging_ids:
-            result = service.evaluate_claim(stages.EvaluateInterpretedClaimCommand(catalogue_item_id=staging_id))
+            result = service.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
             created += result.metrics.created_count
             reused += result.metrics.reused_count
             blocking += result.metrics.blocking_issue_count
@@ -219,14 +211,14 @@ def evaluate_interpreted_claims_task(staging_ids: tuple[UUID, ...]) -> tuple[int
 def prepare_eligible_candidates_task(
     identity: RunIdentity,
     staging_ids: tuple[UUID, ...],
-    interpretation: InterpretationOutcome,
+    conformance: ConformanceOutcome,
 ) -> tuple[int, int, tuple[str, ...]]:
     db = database.SessionLocal()
     try:
         service = stages.MasteringService(db)
         created = reused = 0
         warnings: list[str] = []
-        for staging_id, item in zip(staging_ids, interpretation.items, strict=True):
+        for staging_id, item in zip(staging_ids, conformance.items, strict=True):
             try:
                 result = service.prepare_candidate(
                     mastering_command_for_claim(
@@ -307,9 +299,9 @@ __all__ = [
     "resolve_recorded_contract_task",
     "extract_source_evidence_task",
     "capture_extracted_evidence_task",
-    "interpret_raw_evidence_task",
-    "build_interpreted_claims_task",
-    "evaluate_interpreted_claims_task",
+    "normalize_evidence_task",
+    "build_normalized_rows_task",
+    "evaluate_normalized_rows_task",
     "prepare_eligible_candidates_task",
     "finalize_run_task",
     "record_run_failure_task",

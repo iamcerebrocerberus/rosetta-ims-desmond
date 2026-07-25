@@ -278,12 +278,15 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
     try:
         for sheet in sheets:
             observed_rows = 0
+            header: dict[int, str | None] = {}
             try:
                 for row in sheet.iter_rows():
                     non_empty = [cell for cell in row if cell.value is not None and str(cell.value).strip()]
                     if not non_empty:
                         continue
                     observed_rows += 1
+                    if not header:
+                        header = {cell.column: (str(cell.value).strip() or None) for cell in non_empty}
                     first_column = min(cell.column for cell in non_empty)
                     last_column = max(cell.column for cell in non_empty)
                     row_number = non_empty[0].row
@@ -297,6 +300,7 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
                             cell_reference=cell.coordinate,
                             row_number=cell.row,
                             column_index=cell.column,
+                            column_name=header.get(cell.column),
                             raw_value=cell.value,
                         )
                         for cell in row
@@ -342,6 +346,20 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
     )
 
 
+def _header_labels(rows: list[list[str]]) -> dict[int, str | None]:
+    """First non-empty row's values as column labels, keyed by 1-based column index.
+
+    Structural inference only (no semantics): lets the supplier contract map
+    each data cell by its column heading. The header row itself is recognised
+    and skipped downstream (its cells repeat the contract's source columns).
+    """
+
+    for row in rows:
+        if any(str(value).strip() for value in row):
+            return {index: (str(value).strip() or None) for index, value in enumerate(row, start=1)}
+    return {}
+
+
 def _extract_csv(content: bytes) -> ExtractionResult:
     try:
         text, encoding = _decode_delimited_text(content)
@@ -361,6 +379,7 @@ def _extract_csv(content: bytes) -> ExtractionResult:
             message="CSV source could not be parsed",
         )
 
+    header = _header_labels(rows)
     observations: list[ExtractedEvidence] = []
     for row_number, row in enumerate(rows, start=1):
         if not any(value.strip() for value in row):
@@ -380,6 +399,7 @@ def _extract_csv(content: bytes) -> ExtractionResult:
                         cell_reference=f"{get_column_letter(column_index)}{row_number}",
                         row_number=row_number,
                         column_index=column_index,
+                        column_name=header.get(column_index),
                         raw_value=value,
                     )
                     for column_index, value in enumerate(row, start=1)
@@ -449,27 +469,16 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
     empty_units = 0
     for page_number, page in enumerate(reader.pages, start=1):
         page_key = f"page:{page_number}"
-        try:
-            page_text = page.extract_text() or ""
-        except Exception:
-            page_text = ""
-            warnings.append(f"page {page_number} text layer could not be decoded; vision fallback required")
-        decision = _classify_pdf_page(page, page_text)
-        page_text_observations: list[ExtractedEvidence] = []
-        if decision.keep_text:
-            page_text_observations = _pdf_text_observations(page_text, page_number=page_number)
-            observations.extend(page_text_observations)
-        decision_warning = _decision_warning(page_number, decision)
-        if decision_warning:
-            warnings.append(decision_warning)
-        if not decision.vision_required:
-            completed += 1
-            continue
+        # Every catalogue page is extracted via the vision provider so tables
+        # yield column-labeled cells the supplier contract can map
+        # deterministically. The PDF text layer is not used as evidence: it
+        # linearizes multi-column tables into per-cell lines the contract
+        # cannot map to fields.
         if not _gemini_api_key():
             errors.append(
                 ExtractionError(
                     code="EXTRACTION_CONFIGURATION_ERROR",
-                    message="Scanned or image-bearing PDF page requires a configured vision provider",
+                    message="PDF evidence extraction requires a configured vision provider",
                     unit_key=page_key,
                     provider="google",
                 )
@@ -488,16 +497,10 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
                 page_number=page_number,
             )
             if page_outcome == "no_catalogue_evidence":
-                if page_text_observations:
-                    warnings.append(
-                        f"page {page_number}: vision provider classified the page as containing "
-                        "no catalogue evidence; text-layer evidence retained"
-                    )
-                else:
-                    warnings.append(
-                        f"page {page_number}: provider classified page as containing no catalogue evidence"
-                    )
-                    empty_units += 1
+                warnings.append(
+                    f"page {page_number}: provider classified page as containing no catalogue evidence"
+                )
+                empty_units += 1
             observations.extend(vision_observations)
             completed += 1
         except _VisionExtractionFailure as exc:

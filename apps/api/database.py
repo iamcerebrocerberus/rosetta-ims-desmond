@@ -55,7 +55,7 @@ def get_db():
 # ── Catalogue pipeline: build fresh, drop superseded tables ──────────────────
 # The catalogue pipeline is built fresh, not data-migrated. Tables superseded by
 # the timeline-consistent rename (raw_observation -> extracted_evidence,
-# staging_item -> interpreted_claim) are DROPPED before create_all, which then
+# staging_item -> normalized_row) are DROPPED before create_all, which then
 # builds the current schema. No rename, no data preservation, no migration
 # history for these tables — an explicit project choice. Guarded by existence;
 # a no-op on fresh databases. Link table first so any FK dependency is gone

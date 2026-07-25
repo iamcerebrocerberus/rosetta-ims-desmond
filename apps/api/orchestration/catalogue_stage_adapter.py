@@ -8,7 +8,7 @@ from schemas.catalogue_pipeline.enums import ReviewRequirement
 from schemas.catalogue_pipeline.extracted_evidence_v1 import ExtractedEvidenceV1
 from services import catalogue_pipeline_stages as stages
 from services.catalogue_evidence_extraction import ExtractedEvidence
-from services.catalogue_interpretation import InterpretedItem
+from services.catalogue_conformance import ConformedRow
 
 from .catalogue_types import RunIdentity
 
@@ -38,11 +38,11 @@ def raw_input_from_extracted_evidence(evidence: ExtractedEvidence) -> stages.Ext
 
 
 def evidence_from_persisted_observation(contract: ExtractedEvidenceV1) -> ExtractedEvidence:
-    """Reconstruct interpretation input from a PERSISTED step-4 observation.
+    """Reconstruct conformance input from a PERSISTED extracted evidence observation.
 
-    The Intermediate layer consumes durable evidence, never the extraction
-    task's in-memory output — the persisted record is the truth that
-    interpretation must be grounded against.
+    Staging conformance consumes durable evidence, never the extraction task's
+    in-memory output — the persisted record is the truth that conformance must
+    be grounded against.
     """
 
     metadata = dict(contract.source_metadata or {})
@@ -65,29 +65,25 @@ def evidence_from_persisted_observation(contract: ExtractedEvidenceV1) -> Extrac
     )
 
 
-def claim_command_from_interpretation(item: InterpretedItem) -> stages.BuildInterpretedClaimCommand:
-    """Create an interpreted-claim (step 6) command from one interpretation.
+def normalized_row_command_from_conformance(item: ConformedRow) -> stages.BuildNormalizedRowCommand:
+    """Create a normalized-row (Staging output) command from one conformed row.
 
-    Claims whose interpretation was degraded, returned no verdict, or had
-    values dropped by the grounding check are explicitly forced to REQUIRED
-    review — an empty or trimmed claim must never look reviewable-as-clean.
+    Rows that could not be conformed deterministically (no structured cells to
+    map through the contract) are forced to REQUIRED review — an empty row must
+    never look reviewable-as-clean.
     """
 
     provenance = dict(item.provenance or {})
-    needs_review = (
-        provenance.get("interpreter") == "none"
-        or provenance.get("no_verdict")
-        or provenance.get("grounding_dropped")
-    )
-    return stages.BuildInterpretedClaimCommand(
+    needs_review = provenance.get("interpreter") == "unconformable"
+    return stages.BuildNormalizedRowCommand(
         raw_observation_ids=(item.raw_observation_id,),
         raw_fields=item.raw_fields,
-        proposed_fields=item.proposed_fields,
+        normalized_fields=item.normalized_fields,
         idempotency_key=item.observation_key,
         review_requirement=ReviewRequirement.REQUIRED if needs_review else None,
         metadata={
             "source_observation_key": item.observation_key,
-            "interpretation": provenance,
+            "conformance": provenance,
         },
     )
 
@@ -96,12 +92,12 @@ def mastering_command_for_claim(
     *,
     run_identity: RunIdentity,
     catalogue_item_id: UUID,
-    item: InterpretedItem,
+    item: ConformedRow,
 ) -> stages.PrepareMasteringCandidateCommand:
-    """Create a pending-review mastering command from post-Raw interpretation.
+    """Create a pending-review mastering command from a conformed normalized row.
 
     Supplier identity comes from the persisted run; sku/name/barcode come from
-    the same interpreted fields that produced the interpreted claim. No approval or
+    the same normalized fields that produced the normalized row. No approval or
     application semantics are implied here.
     """
 
@@ -134,8 +130,8 @@ def mastering_command_for_claim(
     )
 
 
-def _proposal_or_raw(item: InterpretedItem, field: str) -> str | None:
-    proposal = item.proposed_fields.get(field)
+def _proposal_or_raw(item: ConformedRow, field: str) -> str | None:
+    proposal = item.normalized_fields.get(field)
     if isinstance(proposal, dict):
         value = proposal.get("value")
         if value is not None and str(value).strip():
