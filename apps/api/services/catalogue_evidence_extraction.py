@@ -28,11 +28,10 @@ from schemas.catalogue_pipeline.enums import ExtractionMethod, SourceFormat
 from schemas.catalogue_pipeline.extracted_evidence_v1 import BoundingBox, RawCell, SourceLocation
 
 
-# Vision model, env-overridable. Default is a free-tier-available flash model;
-# "gemini-3.1-pro" is NOT a valid id (use "gemini-3.1-pro-preview") and the 3.x
-# Pro models are paid-tier only, so set GEMINI_MODEL=gemini-3.1-pro-preview (with
-# billing enabled) for higher-quality OCR.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest")
+# Vision model, env-overridable. Default is gemini-3.1-pro-preview — the valid id
+# for 3.1 Pro ("gemini-3.1-pro" is not a real model). Pro is paid-tier; a key
+# without billing must override, e.g. GEMINI_MODEL=gemini-flash-latest.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview")
 # A dense catalogue page emits ~30k output tokens of verbatim cells, and
 # thinking models spend more of the budget before emitting any — too small a
 # ceiling truncates the JSON envelope (finish_reason MAX_TOKENS). Give ample
