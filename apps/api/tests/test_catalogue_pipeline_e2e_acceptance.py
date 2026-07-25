@@ -319,7 +319,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert serving_contract.contract_version == "catalogue.serving_item.v1"
     assert serving_contract.review_status == ReviewStatus.APPROVED
     assert serving_contract.canonical_sku == "10447"
-    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken 82g"
+    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken - 82g"
     assert serving_contract.supplier_offering.supplier_sku == "10447"
     assert serving_contract.current_approved_cost.amount == Decimal("13.10")
     assert serving_contract.current_approved_cost.currency == "HKD"
@@ -503,7 +503,11 @@ def _assert_served_field_lineage(
     assert "13.10" in cells_text
     _assert_text_contains(cells_text, serving.canonical_sku)
     _assert_text_contains(cells_text, serving.supplier_offering.supplier_sku)
-    _assert_text_contains(cells_text, serving.product_variant_name)
+    # product_variant_name is a DETERMINISTIC composition (brand + name parts +
+    # size, de-duplicated) — not a verbatim source substring — so its source tie
+    # is asserted structurally (serving == candidate == staging) above. The raw,
+    # unnormalized product name it was composed from stays grounded in the cells:
+    _assert_text_contains(cells_text, staging_contract.raw_fields.product_name)
     _assert_decimal_grounded(cells_text, serving.current_approved_cost.amount, label="approved cost")
     _assert_text_contains(
         cells_text,
