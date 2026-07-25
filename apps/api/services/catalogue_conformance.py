@@ -184,9 +184,6 @@ def _fields_from_cells(observation: ExtractedEvidence, runtime_contract) -> dict
             fields[target] = value
     if observation.confidence is not None:
         fields.setdefault("confidence", str(observation.confidence))
-    display_name = _compose_display_name(runtime_contract, _lookup, fields)
-    if display_name:
-        fields["display_name"] = display_name
     return fields
 
 
@@ -218,8 +215,10 @@ def _item_from_fields(
         "confidence": _confidence_text(fields.get("confidence"), observation.confidence),
     }
     normalized: dict[str, Any] = {"mbb_terms": []}
-    # product_name is the clean composed display name; raw_fields keeps the raw join.
-    product_name = _text(fields.get("display_name")) or _text(fields.get("description"))
+    # normalized product_name = the contract's composed join, English only (bilingual
+    # source cells keep their Latin portion). raw_fields keeps the verbatim join.
+    # No recomposition beyond the contract: no brand/size, no reordering, no dedup.
+    product_name = _english_text(fields.get("description")) or _text(fields.get("description"))
     if product_name is not None:
         normalized["product_name"] = {"value": product_name, "evidence": evidence}
     for source_key, normalized_key in (
@@ -366,59 +365,16 @@ def _column_keys(value: str) -> list[str]:
     return keys
 
 
-def _english_segment(value: Any) -> str | None:
-    """The Latin/ASCII portion of a (possibly bilingual) value, tidied for a name."""
+def _english_text(value: Any) -> str | None:
+    """The Latin/ASCII portion of a (possibly bilingual) value.
+
+    Bilingual source cells render as "中文 English"; keep only the English and
+    tidy whitespace. Returns None when there is no Latin text.
+    """
     if value is None:
         return None
     ascii_only = re.sub(r"[^\x00-\x7f]+", " ", str(value))
-    ascii_only = re.sub(r"\s+", " ", ascii_only).strip(" -|/*·,")
-    return re.sub(r"\s+", " ", ascii_only).strip() or None
-
-
-def _dedupe_name_segments(segments: list[str]) -> list[str]:
-    kept: list[str] = []
-    for segment in segments:
-        lowered = segment.casefold()
-        if any(lowered in other.casefold() for other in kept):
-            continue  # already contained in a kept segment (e.g. duplicate)
-        # This segment is more specific than any kept one it contains — keep the longer.
-        kept = [other for other in kept if other.casefold() not in lowered]
-        kept.append(segment)
-    return kept
-
-
-def _compose_display_name(runtime_contract, lookup, fields: dict[str, Any]) -> str | None:
-    """Assemble a clean structured product name: Brand - <name parts> - Variant - Size.
-
-    English-only (bilingual source cells keep their Latin portion), de-duplicated
-    (bilingual sources often repeat the range inside the description), and joined
-    with " - ". Falls back to the raw composed description when nothing survives.
-    """
-
-    segments: list[str] = []
-    brand = _english_segment(fields.get("brand"))
-    if brand:
-        segments.append(brand)
-    for contract_field in runtime_contract.declaration.fields:
-        if _role_target(contract_field.role) != "description":
-            continue
-        columns = list(contract_field.composed_from or ())
-        if not columns:
-            columns = [column for column in (contract_field.source_column, contract_field.source_path) if column]
-        # Compose the name from the source columns in REVERSE declared order
-        # (Product Description -> Life Stage -> Product Range).
-        for column in reversed(columns):
-            part = _english_segment(lookup(column))
-            if part:
-                segments.append(part)
-        break
-    variant = _english_segment(fields.get("variant"))
-    if variant:
-        segments.append(variant)
-    size = _english_segment(fields.get("pack_size") or fields.get("uom"))
-    if size:
-        segments.append(size)
-    return " - ".join(_dedupe_name_segments(segments)) or None
+    return re.sub(r"\s+", " ", ascii_only).strip(" -|/*·,") or None
 
 
 def _has_cells(observation: ExtractedEvidence) -> bool:

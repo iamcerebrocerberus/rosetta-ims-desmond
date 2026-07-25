@@ -195,7 +195,7 @@ def test_staging_layer_returns_evidence_and_normalized_rows(client, db, monkeypa
     assert row["raw_fields"]["supplier_sku"] == "10447"
     fields = row["normalized_fields"]
     assert fields["supplier_sku"]["value"] == "10447"
-    assert fields["product_name"]["value"] == "Hill's - Chicken 82g - Adult - Science Plan"
+    assert fields["product_name"]["value"] == "Science Plan Adult Chicken 82g"
     assert fields["brand"]["value"] == "Hill's"
     assert fields["cost"]["currency"] == "HKD"
     assert fields["cost"]["amount"] == "13.10"

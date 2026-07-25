@@ -423,7 +423,7 @@ def test_conformance_maps_hills_row_from_contract_cells(db):
     assert item.normalized_fields["supplier_sku"]["value"] == "10447"
     assert item.normalized_fields["supplier_sku"]["evidence"]["raw_observation_id"] == str(raw_id)
     assert item.normalized_fields["supplier_sku"]["evidence"]["field_path"] == "/raw_cells"
-    assert item.normalized_fields["product_name"]["value"] == "Hill's - Chicken 82g - Adult - Science Plan"
+    assert item.normalized_fields["product_name"]["value"] == "Science Plan Adult Chicken 82g"
     assert item.normalized_fields["cost"]["amount"] == "13.10"
     assert item.normalized_fields["packaging"]["content_amount"] == "82"
     assert "sellable_units_per_purchase_unit" not in item.normalized_fields["packaging"]

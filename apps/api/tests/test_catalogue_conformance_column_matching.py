@@ -57,7 +57,7 @@ def test_real_gemini_bilingual_headers_map_through_the_contract():
     assert len(outcome.items) == 1
     fields = outcome.items[0].normalized_fields
     assert fields["supplier_sku"]["value"] == "10447"
-    assert fields["product_name"]["value"] == "Hill's - Chicken 82g - Adult - Science Plan"
+    assert fields["product_name"]["value"] == "Science Plan Adult Chicken 82g"
     assert fields["brand"]["value"] == "Hill's"  # contract constant
     # Cost mapped despite the CJK side differing from the contract text.
     assert fields["cost"]["amount"] == "13.10"
@@ -88,7 +88,8 @@ def test_bilingual_cell_values_compose_a_clean_english_product_name():
         "Gross Wholesale Price 折扣前批發價（每包／罐）": "13.10",
     }
     row = conform_observations((_observation(gemini_row),), (uuid4(),), hills).items[0]
-    # raw_fields keeps the verbatim bilingual join; normalized is the clean name:
-    # English-only, de-duplicated (the range repeats in the description), " - "-joined.
+    # raw_fields keeps the verbatim bilingual join (the contract's composed_from
+    # order: range, life stage, description). normalized is the same join with the
+    # CJK removed — no recomposition beyond the contract (no brand/size, no dedup).
     assert row.raw_fields["product_name"] == "健康燉肉 Healthy Cuisine 幼貓 Kitten 健康燉肉配方 Healthy Cuisine"
-    assert row.normalized_fields["product_name"]["value"] == "Hill's - Healthy Cuisine - Kitten - 82g"
+    assert row.normalized_fields["product_name"]["value"] == "Healthy Cuisine Kitten Healthy Cuisine"
