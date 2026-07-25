@@ -136,50 +136,52 @@ def _fields_from_cells(observation: ExtractedEvidence, runtime_contract) -> dict
     rows.
     """
 
-    # This row's values, keyed by its folded column heading.
-    cell_by_column: dict[str, str] = {}
+    # Index this row's cells by every match-key of their column heading.
+    cell_by_key: dict[str, str] = {}
+    row_values: list[str] = []
     for cell in observation.raw_cells:
         if cell.column_name and cell.raw_value is not None and str(cell.raw_value).strip():
-            cell_by_column.setdefault(_fold(cell.column_name), str(cell.raw_value))
-    if not cell_by_column:
+            row_values.append(str(cell.raw_value))
+            for key in _column_keys(cell.column_name):
+                cell_by_key.setdefault(key, str(cell.raw_value))
+    if not cell_by_key:
         return {}
 
-    direct_targets: dict[str, str] = {}
-    composed: list[tuple[str, list[str]]] = []
-    constants: list[tuple[str, Any]] = []
-    source_columns: set[str] = set()
-    for contract_field in runtime_contract.declaration.fields:
-        target = _role_target(contract_field.role)
-        if target is None:
-            continue
-        for source_name in filter(None, (contract_field.source_column, contract_field.source_path)):
-            direct_targets[_fold(source_name)] = target
-            source_columns.add(_fold(source_name))
-        if contract_field.composed_from:
-            folded = [_fold(column) for column in contract_field.composed_from]
-            composed.append((target, folded))
-            source_columns.update(folded)
-        if contract_field.constant_value is not None:
-            constants.append((target, contract_field.constant_value))
+    def _lookup(column_name: str) -> str | None:
+        for key in _column_keys(column_name):
+            if key in cell_by_key:
+                return cell_by_key[key]
+        return None
 
     # Header row: its cell VALUES repeat the contract's declared source columns.
-    header_hits = sum(1 for value in cell_by_column.values() if _fold(value) in source_columns)
-    if header_hits >= max(2, len(cell_by_column) - 1):
+    source_keys: set[str] = set()
+    for contract_field in runtime_contract.declaration.fields:
+        for source_name in filter(
+            None, (contract_field.source_column, contract_field.source_path, *(contract_field.composed_from or ()))
+        ):
+            source_keys.update(_column_keys(source_name))
+    header_hits = sum(1 for value in row_values if any(key in source_keys for key in _column_keys(value)))
+    if header_hits >= max(2, len(row_values) - 1):
         return None
 
     fields: dict[str, Any] = {}
-    for folded_column, value in cell_by_column.items():
-        target = direct_targets.get(folded_column)
-        if target and target not in fields:
-            fields[target] = value
-    for target, columns in composed:
-        if target in fields:
+    for contract_field in runtime_contract.declaration.fields:
+        target = _role_target(contract_field.role)
+        if target is None or target in fields:
             continue
-        parts = [cell_by_column[column] for column in columns if column in cell_by_column]
-        if parts:
-            fields[target] = " ".join(parts)
-    for target, constant_value in constants:
-        fields.setdefault(target, constant_value)
+        value: Any = None
+        for source_name in filter(None, (contract_field.source_column, contract_field.source_path)):
+            value = _lookup(source_name)
+            if value is not None:
+                break
+        if value is None and contract_field.composed_from:
+            parts = [part for part in (_lookup(column) for column in contract_field.composed_from) if part]
+            if parts:
+                value = " ".join(parts)
+        if value is None and contract_field.constant_value is not None:
+            value = contract_field.constant_value
+        if value is not None:
+            fields[target] = value
     if observation.confidence is not None:
         fields.setdefault("confidence", str(observation.confidence))
     return fields
@@ -335,7 +337,27 @@ def _text(value: Any) -> str | None:
 
 
 def _fold(value: str) -> str:
-    return re.sub(r"\s+", " ", value).strip().lower()
+    # Separator-insensitive: treat "/", "|" and whitespace runs as one space so a
+    # contract column "Product Range / 產品系列" folds the same as an OCR rendering
+    # "Product Range 產品系列".
+    return re.sub(r"[\s/|]+", " ", value).strip().lower()
+
+
+def _english_fold(value: str) -> str:
+    # The Latin/ASCII portion only. Bilingual headers keep a stable English name
+    # while their CJK rendering varies across OCR passes (the vision provider vs
+    # the contract text), so the English part is the reliable match key.
+    ascii_only = re.sub(r"[^\x00-\x7f]+", " ", value)
+    ascii_only = re.sub(r"[/|*()]+", " ", ascii_only)
+    return re.sub(r"\s+", " ", ascii_only).strip().lower()
+
+
+def _column_keys(value: str) -> list[str]:
+    keys = [_fold(value)]
+    english = _english_fold(value)
+    if english and english not in keys:
+        keys.append(english)
+    return keys
 
 
 def _has_cells(observation: ExtractedEvidence) -> bool:
