@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import re
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -37,6 +38,14 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview")
 # ceiling truncates the JSON envelope (finish_reason MAX_TOKENS). Give ample
 # room; env-overridable for very dense pages.
 MAX_VISION_TOKENS = int(os.environ.get("CATALOGUE_VISION_MAX_TOKENS", "65536"))
+# Gemini 3.x "thinking" models spend most of the token budget AND wall-clock on
+# thinking before emitting. LOW keeps OCR quality while cutting latency/cost
+# sharply. Empty disables the override (for models that don't accept it — the
+# call then falls back automatically on an invalid-argument error).
+VISION_THINKING_LEVEL = os.environ.get("CATALOGUE_VISION_THINKING_LEVEL", "LOW").strip()
+# A multi-page PDF is N sequential provider round-trips otherwise; run the
+# per-page vision calls concurrently, bounded here (env-overridable).
+_VISION_CONCURRENCY = max(1, int(os.environ.get("CATALOGUE_VISION_CONCURRENCY", "6")))
 
 
 class ExtractionStatus(str, Enum):
@@ -469,72 +478,92 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
             message="PDF source could not be read",
         )
 
+    pages = list(reader.pages)
     observations: list[ExtractedEvidence] = []
     warnings: list[str] = []
     errors: list[ExtractionError] = []
     completed = 0
     empty_units = 0
-    for page_number, page in enumerate(reader.pages, start=1):
-        page_key = f"page:{page_number}"
-        # Every catalogue page is extracted via the vision provider so tables
-        # yield column-labeled cells the supplier contract can map
-        # deterministically. The PDF text layer is not used as evidence: it
-        # linearizes multi-column tables into per-cell lines the contract
-        # cannot map to fields.
-        if not _gemini_api_key():
-            errors.append(
-                ExtractionError(
-                    code="EXTRACTION_CONFIGURATION_ERROR",
-                    message="PDF evidence extraction requires a configured vision provider",
-                    unit_key=page_key,
-                    provider="google",
-                )
+
+    if not pages:
+        warnings.append("PDF contained no pages")
+        return _build_result(SourceFormat.PDF, observations=observations, units_attempted=0, units_completed=0)
+
+    # Every catalogue page is extracted via the vision provider so tables yield
+    # column-labeled cells the supplier contract can map deterministically. The
+    # PDF text layer is not used as evidence (it linearizes multi-column tables
+    # into per-cell lines the contract cannot map to fields).
+    if not _gemini_api_key():
+        errors = [
+            ExtractionError(
+                code="EXTRACTION_CONFIGURATION_ERROR",
+                message="PDF evidence extraction requires a configured vision provider",
+                unit_key=f"page:{page_number}",
+                provider="google",
             )
-            continue
+            for page_number in range(1, len(pages) + 1)
+        ]
+        return _build_result(SourceFormat.PDF, observations=observations, units_attempted=len(pages), units_completed=0, errors=errors)
+
+    # Prepare per-page bytes sequentially (pypdf is not thread-safe), then run
+    # the vision round-trips concurrently — a multi-page PDF is otherwise N
+    # sequential provider calls.
+    page_payloads: list[tuple[int, bytes]] = []
+    for page_number, page in enumerate(pages, start=1):
         try:
-            page_content = _single_page_pdf_bytes(page)
-            response = _call_gemini_vision(
-                page_content,
-                media_type="application/pdf",
-            )
-            vision_observations, page_outcome = _vision_observations(
-                response,
-                extraction_method=ExtractionMethod.MODEL_VISION,
-                unit_key=page_key,
-                page_number=page_number,
-            )
-            if page_outcome == "no_catalogue_evidence":
-                warnings.append(
-                    f"page {page_number}: provider classified page as containing no catalogue evidence"
-                )
-                empty_units += 1
-            observations.extend(vision_observations)
-            completed += 1
-        except _VisionExtractionFailure as exc:
-            errors.append(
-                ExtractionError(
-                    code=exc.code,
-                    message=exc.public_message,
-                    unit_key=page_key,
-                    provider="google",
-                    retryable=exc.retryable,
-                )
-            )
+            page_payloads.append((page_number, _single_page_pdf_bytes(page)))
         except Exception:
             errors.append(
                 ExtractionError(
                     code="SOURCE_PAGE_READ_ERROR",
                     message="PDF page could not be prepared for vision extraction",
-                    unit_key=page_key,
+                    unit_key=f"page:{page_number}",
                     provider="pypdf",
                 )
             )
-    if not len(reader.pages):
-        warnings.append("PDF contained no pages")
+
+    def _extract_page(page_number: int, page_bytes: bytes):
+        page_key = f"page:{page_number}"
+        try:
+            response = _call_gemini_vision(page_bytes, media_type="application/pdf")
+            page_observations, page_outcome = _vision_observations(
+                response,
+                extraction_method=ExtractionMethod.MODEL_VISION,
+                unit_key=page_key,
+                page_number=page_number,
+            )
+            return page_number, page_observations, page_outcome, None
+        except _VisionExtractionFailure as exc:
+            return page_number, [], None, ExtractionError(
+                code=exc.code, message=exc.public_message, unit_key=page_key, provider="google", retryable=exc.retryable
+            )
+        except Exception:
+            return page_number, [], None, ExtractionError(
+                code="SOURCE_PAGE_READ_ERROR",
+                message="PDF page could not be prepared for vision extraction",
+                unit_key=page_key,
+                provider="pypdf",
+            )
+
+    workers = min(len(page_payloads), _VISION_CONCURRENCY) or 1
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        page_results = list(pool.map(lambda payload: _extract_page(*payload), page_payloads))
+
+    # Assemble in page order so observation identity/ordering stays deterministic.
+    for page_number, page_observations, page_outcome, error in sorted(page_results, key=lambda item: item[0]):
+        if error is not None:
+            errors.append(error)
+            continue
+        completed += 1
+        if page_outcome == "no_catalogue_evidence":
+            warnings.append(f"page {page_number}: provider classified page as containing no catalogue evidence")
+            empty_units += 1
+        observations.extend(page_observations)
+
     return _build_result(
         SourceFormat.PDF,
         observations=observations,
-        units_attempted=len(reader.pages),
+        units_attempted=len(pages),
         units_completed=completed,
         empty_units=empty_units,
         warnings=warnings,
@@ -705,14 +734,25 @@ def _call_gemini_vision(content: bytes, *, media_type: str) -> _VisionResponse:
         from google.genai import types
 
         client = genai.Client(api_key=_gemini_api_key())
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                types.Part.from_bytes(data=content, mime_type=media_type),
-                VISION_EVIDENCE_PROMPT,
-            ],
-            config=types.GenerateContentConfig(max_output_tokens=MAX_VISION_TOKENS),
-        )
+        contents = [types.Part.from_bytes(data=content, mime_type=media_type), VISION_EVIDENCE_PROMPT]
+
+        def _generate(cap_thinking: bool):
+            config_kwargs: dict[str, Any] = {"max_output_tokens": MAX_VISION_TOKENS}
+            if cap_thinking and VISION_THINKING_LEVEL:
+                config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=VISION_THINKING_LEVEL)
+            return client.models.generate_content(
+                model=GEMINI_MODEL, contents=contents, config=types.GenerateContentConfig(**config_kwargs)
+            )
+
+        try:
+            response = _generate(cap_thinking=True)
+        except Exception as exc:  # noqa: BLE001 - provider surface is broad
+            # Some models don't accept thinking_level (400 INVALID_ARGUMENT).
+            # Retry once without the cap rather than failing the page.
+            if VISION_THINKING_LEVEL and _is_invalid_argument(exc):
+                response = _generate(cap_thinking=False)
+            else:
+                raise
         try:
             text = response.text
         except Exception:
@@ -728,6 +768,13 @@ def _call_gemini_vision(content: bytes, *, media_type: str) -> _VisionResponse:
         raise
     except Exception as exc:
         raise _classify_provider_failure(exc) from exc
+
+
+def _is_invalid_argument(exc: Exception) -> bool:
+    """True for a provider 400 INVALID_ARGUMENT (e.g. an unsupported config field)."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    text = f"{exc}"
+    return code == 400 or text.strip().startswith("400") or "INVALID_ARGUMENT" in text
 
 
 def _classify_provider_failure(exc: Exception) -> "_VisionExtractionFailure":
