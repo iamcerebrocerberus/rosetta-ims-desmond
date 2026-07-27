@@ -44,6 +44,8 @@ from services.catalogue_evidence_extraction import (  # noqa: E402
     ExtractionError,
     ExtractionResult,
     ExtractionStatus,
+    ExtractionUnitOutcome,
+    ExtractionUnitStatus,
 )
 from services.catalogue_conformance import conform_observations  # noqa: E402
 from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueSubmissionService  # noqa: E402
@@ -91,6 +93,7 @@ def _reset(session):
     for model in (
         models.CatalogueSubmissionIdempotency,
         models.CatalogueRawStageAttempt,
+        models.CatalogueExtractionAttempt,
         models.CatalogueServingPublication,
         models.CatalogueSupplierMbbTerm,
         models.CatalogueSupplierPrice,
@@ -373,10 +376,8 @@ def test_extraction_policy_maps_partial_and_failed_results(db, monkeypatch):
         errors=(ExtractionError(code="SOURCE_PAGE_READ_ERROR", message="page 2 could not be read", unit_key="page:2"),),
     )
     monkeypatch.setattr(extraction_adapter, "extract_evidence", lambda *a, **k: partial)
-    outcome = extract_source_evidence(asset)
-    assert outcome.rejected_units == 1
-    assert outcome.warnings == ("page:2: page 2 could not be read",)
-    assert len(outcome.observations) == 1
+    with pytest.raises(ExtractionEvidenceError, match="page 2"):
+        extract_source_evidence(asset)
 
     transient = ExtractionResult(
         status=ExtractionStatus.FAILED,
@@ -399,6 +400,79 @@ def test_extraction_policy_maps_partial_and_failed_results(db, monkeypatch):
     monkeypatch.setattr(extraction_adapter, "extract_evidence", lambda *a, **k: failed)
     with pytest.raises(ExtractionEvidenceError, match="could not be read"):
         extract_source_evidence(asset)
+
+    explicitly_empty = ExtractionResult(
+        status=ExtractionStatus.COMPLETE,
+        source_format=SourceFormat.PDF,
+        units_attempted=1,
+        units_completed=1,
+        empty_units=1,
+        unit_outcomes=(
+            ExtractionUnitOutcome(
+                unit_key="page:1",
+                status=ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE,
+                provider="google",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        extraction_adapter,
+        "extract_evidence",
+        lambda *a, **k: explicitly_empty,
+    )
+    with pytest.raises(ExtractionEvidenceError, match="no catalogue evidence"):
+        extract_source_evidence(asset)
+
+
+def test_partial_extraction_is_audited_and_blocks_all_downstream_stages(db, monkeypatch):
+    submitted = _submit(db)
+    partial = ExtractionResult(
+        status=ExtractionStatus.PARTIAL,
+        source_format=SourceFormat.PDF,
+        observations=(_evidence(),),
+        units_attempted=2,
+        units_completed=1,
+        unit_outcomes=(
+            ExtractionUnitOutcome(
+                unit_key="page:1",
+                status=ExtractionUnitStatus.EVIDENCE_CAPTURED,
+                observation_count=1,
+                provider="google",
+            ),
+            ExtractionUnitOutcome(
+                unit_key="page:2",
+                status=ExtractionUnitStatus.FAILED_PERMANENT,
+                provider="google",
+                error_code="SOURCE_PAGE_READ_ERROR",
+                message="page 2 could not be read",
+            ),
+        ),
+        errors=(
+            ExtractionError(
+                code="SOURCE_PAGE_READ_ERROR",
+                message="page 2 could not be read",
+                unit_key="page:2",
+                provider="google",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        extraction_adapter,
+        "extract_evidence",
+        lambda *_args, **_kwargs: partial,
+    )
+
+    result = catalogue_ingestion_flow(ingestion_run_id=submitted.ingestion_run_id)
+
+    assert result.terminal_status == "failed"
+    assert result.error_code == "EXTRACTION_EVIDENCE_ERROR"
+    attempt = db.query(models.CatalogueExtractionAttempt).one()
+    assert attempt.status == "PARTIAL"
+    assert attempt.units_attempted == 2
+    assert attempt.units_completed == 1
+    assert db.query(models.CatalogueExtractedEvidence).count() == 0
+    assert db.query(models.CatalogueNormalizedRow).count() == 0
+    assert db.query(models.CatalogueMasteringCandidate).count() == 0
 
 
 def test_conformance_maps_hills_row_from_contract_cells(db):

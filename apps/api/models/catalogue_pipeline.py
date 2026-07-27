@@ -108,6 +108,48 @@ class CatalogueRawStageAttempt(Base):
     created_at = Column(String, nullable=False)
 
 
+class CatalogueExtractionAttempt(Base):
+    """Append-only Staging extraction attempt with per-unit completeness."""
+
+    __tablename__ = "catalogue_extraction_attempts"
+    __table_args__ = (
+        UniqueConstraint("attempt_uuid", name="uq_extraction_attempts_uuid"),
+        Index("ix_extraction_attempts_run", "ingestion_run_uuid"),
+        Index("ix_extraction_attempts_source", "catalogue_source_document_id"),
+        CheckConstraint(
+            "status IN ('COMPLETE','PARTIAL','FAILED')",
+            name="ck_extraction_attempt_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    attempt_uuid = Column(String(36), nullable=False, default=_uuid)
+    ingestion_run_uuid = Column(
+        String(36),
+        ForeignKey("catalogue_ingestion_runs.run_uuid"),
+        nullable=False,
+    )
+    catalogue_source_document_id = Column(
+        Integer,
+        ForeignKey("catalogue_source_documents.id"),
+        nullable=True,
+    )
+    status = Column(String, nullable=False)
+    source_format = Column(String, nullable=False)
+    provider = Column(String, nullable=True)
+    model_name = Column(String, nullable=True)
+    started_at = Column(String, nullable=False)
+    completed_at = Column(String, nullable=False)
+    units_attempted = Column(Integer, nullable=False)
+    units_completed = Column(Integer, nullable=False)
+    empty_units = Column(Integer, nullable=False, default=0)
+    observation_count = Column(Integer, nullable=False, default=0)
+    unit_outcomes_json = Column(Text, nullable=False)
+    warnings_json = Column(Text, nullable=False)
+    errors_json = Column(Text, nullable=False)
+    created_at = Column(String, nullable=False)
+
+
 class CatalogueExtractedEvidence(Base):
     """Extracted evidence observation: verbatim evidence + exact source location.
 
@@ -609,6 +651,7 @@ class CatalogueServingPublication(Base):
 
 __all__ = [
     "CatalogueSourceDocument",
+    "CatalogueExtractionAttempt",
     "CatalogueExtractedEvidence",
     "CatalogueNormalizedRow",
     "CatalogueNormalizedRowEvidence",

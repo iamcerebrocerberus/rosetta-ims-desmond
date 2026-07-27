@@ -81,7 +81,10 @@ def test_csv_preserves_coordinates_raw_values_empty_cells_and_duplicate_rows():
 
     assert result.status == ExtractionStatus.COMPLETE
     assert result.source_format == SourceFormat.CSV
-    assert result.units_attempted == result.units_completed == 3
+    # CSV parsing is one independently complete unit; rows are observations.
+    assert result.units_attempted == result.units_completed == 1
+    assert result.unit_outcomes[0].unit_key == "csv:1"
+    assert result.unit_outcomes[0].observation_count == 3
     assert len(result.observations) == 3
     second = result.observations[1]
     assert second.source_location.row_number == 2
@@ -684,6 +687,43 @@ def test_pdf_pages_are_extracted_via_vision_into_column_labeled_cells(monkeypatc
         ("Product Code", "10447"),
         ("Size", "82g"),
     ]
+
+
+def test_pdf_retries_only_the_transiently_failed_page(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "configured-for-test")
+    calls = 0
+
+    def transient_then_success(_content: bytes, *, media_type: str):
+        nonlocal calls
+        calls += 1
+        assert media_type == "application/pdf"
+        if calls == 1:
+            raise evidence_service._VisionExtractionFailure(
+                code="TRANSIENT_PROVIDER_ERROR",
+                public_message="Vision provider failed temporarily",
+                retryable=True,
+            )
+        return evidence_service._VisionResponse(
+            text=_vision_envelope([{"Product Code": "10447"}]),
+            request_id="retry-success",
+        )
+
+    monkeypatch.setattr(
+        evidence_service,
+        "_call_gemini_vision",
+        transient_then_success,
+    )
+
+    result = catalogue_evidence_extraction.extract_evidence(
+        _pdf_with_pages(["Hills Catalogue"]),
+        "hills.pdf",
+        "application/pdf",
+    )
+
+    assert result.status == ExtractionStatus.COMPLETE
+    assert calls == 2
+    assert result.unit_outcomes[0].status.value == "EVIDENCE_CAPTURED"
+    assert result.unit_outcomes[0].attempt_count == 2
 
 
 def test_pdf_without_configured_vision_provider_is_a_configuration_error(monkeypatch):

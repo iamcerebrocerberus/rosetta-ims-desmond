@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from prefect import get_run_logger, task
@@ -15,7 +16,10 @@ from services.catalogue_conformance import (
 )
 
 from .catalogue_contract_resolution import resolve_recorded_supplier_contract
-from .catalogue_extraction_adapter import extract_source_evidence
+from .catalogue_extraction_adapter import (
+    evidence_outcome_from_result,
+    extract_source_result,
+)
 from .catalogue_raw_stage import complete_raw_stage
 from .catalogue_run_lifecycle import claim_queued_run, complete_run, fail_run, terminal_result_for_replay
 from .catalogue_source_loader import load_and_verify_source_asset
@@ -100,7 +104,21 @@ def extract_source_evidence_task(ingestion_run_id: str) -> EvidenceOutcome:
         asset = load_and_verify_source_asset(db, ingestion_run_id=UUID(ingestion_run_id))
     finally:
         db.close()
-    return extract_source_evidence(asset)
+    started_at = datetime.now(timezone.utc)
+    result = extract_source_result(asset)
+    db = database.SessionLocal()
+    try:
+        from services.catalogue_extraction_attempts import persist_extraction_attempt
+
+        persist_extraction_attempt(
+            db,
+            ingestion_run_id=UUID(ingestion_run_id),
+            result=result,
+            started_at=started_at,
+        )
+    finally:
+        db.close()
+    return evidence_outcome_from_result(result)
 
 
 @task(name="capture-extracted-evidence", retries=0)

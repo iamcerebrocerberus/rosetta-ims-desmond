@@ -525,6 +525,7 @@ def _reset(session):
     for model in (
         models.CatalogueSubmissionIdempotency,
         models.CatalogueRawStageAttempt,
+        models.CatalogueExtractionAttempt,
         models.CatalogueServingPublication,
         models.CatalogueSupplierMbbTerm,
         models.CatalogueSupplierPrice,

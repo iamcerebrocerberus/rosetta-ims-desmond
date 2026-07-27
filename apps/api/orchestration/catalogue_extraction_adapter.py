@@ -24,9 +24,24 @@ from .catalogue_types import (
 def extract_source_evidence(source: VerifiedSourceAsset) -> EvidenceOutcome:
     """Extract verbatim, source-located observations for one verified source."""
 
-    result = extract_evidence(source.content, source.original_filename, "")
-    if result.status == ExtractionStatus.FAILED:
+    return evidence_outcome_from_result(extract_source_result(source))
+
+
+def extract_source_result(source: VerifiedSourceAsset) -> ExtractionResult:
+    """Return the complete provider result so orchestration can audit attempts."""
+
+    return extract_evidence(source.content, source.original_filename, "")
+
+
+def evidence_outcome_from_result(result: ExtractionResult) -> EvidenceOutcome:
+    """Allow downstream work only after every attempted source unit completed."""
+
+    if result.status != ExtractionStatus.COMPLETE:
         raise _failure_from(result)
+    if not result.observations:
+        raise ExtractionEvidenceError(
+            "Extraction completed but found no catalogue evidence in any source unit"
+        )
     warnings = tuple(result.warnings) + tuple(
         f"{error.unit_key or 'source'}: {error.message}" for error in result.errors
     )
@@ -41,5 +56,8 @@ def _failure_from(result: ExtractionResult) -> Exception:
     retryable = next((error for error in result.errors if error.retryable), None)
     if retryable is not None:
         return TransientProviderError(retryable.message)
-    message = "; ".join(error.message for error in result.errors) or "Extraction produced no source evidence"
+    message = (
+        "; ".join(error.message for error in result.errors)
+        or "Extraction did not account for every source unit"
+    )
     return ExtractionEvidenceError(message)
