@@ -89,6 +89,27 @@ class MasteringReviewRequest(BaseModel):
     decided_at: datetime | None = None
 
 
+class MasteringCorrectionRequest(BaseModel):
+    """Human correction of one or more candidate resolution sections.
+
+    Produces an immutable revised candidate superseding this one; the revision
+    is what gets approved. Sections are validated by the stage service against
+    the mastering-candidate contract.
+    """
+
+    reason: str
+    expected_candidate_created_at: str | None = None
+    revised_at: datetime | None = None
+    supplier_product_resolution: dict[str, Any] | None = None
+    product_variant_resolution: dict[str, Any] | None = None
+    packaging_resolution: dict[str, Any] | None = None
+    supplier_price_resolution: dict[str, Any] | None = None
+    mbb_resolution: dict[str, Any] | None = None
+    product_family_resolution: dict[str, Any] | None = None
+    brand_resolution: dict[str, Any] | None = None
+    category_resolution: dict[str, Any] | None = None
+
+
 class CommercialApplicationRequest(BaseModel):
     applied_at: datetime | None = None
 
@@ -272,6 +293,55 @@ def review_catalogue_mastering_candidate(
             request=request,
             user=user,
             action="catalogue.pipeline_candidate_review",
+            entity_type="catalogue_mastering_candidate",
+            entity_id=mastering_candidate_id,
+            result=result,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise _stage_http_error(exc) from exc
+    return _action_response(result)
+
+
+@router.post(
+    "/ingestions/{run_uuid}/mastering-candidates/{mastering_candidate_id}/correct",
+    response_model=PipelineActionResponse,
+)
+def correct_catalogue_mastering_candidate(
+    run_uuid: UUID,
+    mastering_candidate_id: UUID,
+    body: MasteringCorrectionRequest,
+    request: Request,
+    db: Session = Depends(database.get_db),
+    user: models.User = Depends(require_capability("catalogue_onboard")),
+):
+    """Supersede a pending candidate with a human-corrected revision."""
+    _load_run_or_404(db, run_uuid)
+    _load_run_candidate_or_404(db, run_uuid, mastering_candidate_id)
+    try:
+        result = stages.MasteringService(db, commit=False).revise_candidate(
+            stages.ReviseMasteringCandidateCommand(
+                mastering_candidate_id=mastering_candidate_id,
+                actor_id=_actor_id(user),
+                reason=body.reason,
+                expected_candidate_created_at=body.expected_candidate_created_at,
+                revised_at=body.revised_at,
+                supplier_product_resolution=body.supplier_product_resolution,
+                product_variant_resolution=body.product_variant_resolution,
+                packaging_resolution=body.packaging_resolution,
+                supplier_price_resolution=body.supplier_price_resolution,
+                mbb_resolution=body.mbb_resolution,
+                product_family_resolution=body.product_family_resolution,
+                brand_resolution=body.brand_resolution,
+                category_resolution=body.category_resolution,
+            )
+        )
+        _audit_pipeline_action(
+            db,
+            request=request,
+            user=user,
+            action="catalogue.pipeline_candidate_correct",
             entity_type="catalogue_mastering_candidate",
             entity_id=mastering_candidate_id,
             result=result,
@@ -475,7 +545,10 @@ def get_intermediate_layer(
         for r in db.query(models.CatalogueValidationIssue).filter_by(**run_filter).order_by(models.CatalogueValidationIssue.id).all()
     ]
     candidates = [
-        persistence.mastering_candidate_to_contract(r).model_dump(mode="json")
+        {
+            **persistence.mastering_candidate_to_contract(r).model_dump(mode="json"),
+            "superseded_by": r.superseded_by_uuid,
+        }
         for r in db.query(models.CatalogueMasteringCandidate).filter_by(**run_filter).order_by(models.CatalogueMasteringCandidate.id).all()
     ]
     return {

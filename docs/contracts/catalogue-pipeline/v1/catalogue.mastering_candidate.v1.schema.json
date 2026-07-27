@@ -1204,6 +1204,7 @@
         "PROPOSED_CREATE",
         "CONFIRMED_MATCH",
         "CONFIRMED_CREATE",
+        "AMBIGUOUS",
         "REJECTED"
       ],
       "title": "ResolutionState",

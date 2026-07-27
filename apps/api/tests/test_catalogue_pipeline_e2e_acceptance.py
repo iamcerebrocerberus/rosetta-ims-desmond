@@ -185,7 +185,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert candidate_contract.review_status == ReviewStatus.PENDING_REVIEW
     assert candidate_contract.product_variant_resolution.product_family_id is None
     assert candidate_contract.product_variant_resolution.state.value == "PROPOSED_MATCH"
-    assert candidate_contract.product_variant_resolution.canonical_sku == "10447"
+    assert candidate_contract.product_variant_resolution.canonical_sku == "RIMS-HC-0447"
     assert candidate_contract.product_variant_resolution.product_variant_name == "Hill's Healthy Cuisine Chicken 82g"
     assert candidate_contract.supplier_product_resolution.supplier_id == 14
     assert candidate_contract.supplier_product_resolution.supplier_sku == "10447"
@@ -291,7 +291,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert applied_again.metrics.reused_count == 1
 
     supplier_product = db.query(models.CatalogueSupplierProduct).one()
-    assert supplier_product.product_variant_id == db.query(models.Product).filter_by(sku_code="10447").one().id
+    assert supplier_product.product_variant_id == db.query(models.Product).filter_by(sku_code="RIMS-HC-0447").one().id
     assert supplier_product.supplier_sku == "10447"
     assert supplier_product.product_family_id is None
     price = db.query(models.CatalogueSupplierPrice).one()
@@ -328,7 +328,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     serving_contract = persistence.serving_item_to_contract(serving_row)
     assert serving_contract.contract_version == "catalogue.serving_item.v1"
     assert serving_contract.review_status == ReviewStatus.APPROVED
-    assert serving_contract.canonical_sku == "10447"
+    assert serving_contract.canonical_sku == "RIMS-HC-0447"
     assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken 82g"
     assert serving_contract.supplier_offering.supplier_sku == "10447"
     assert serving_contract.current_approved_cost.amount == Decimal("13.10")
@@ -512,7 +512,9 @@ def _assert_served_field_lineage(
     assert raw_contract.raw_cells
     cells_text = " ".join(str(cell.raw_value) for cell in raw_contract.raw_cells)
     assert "13.10" in cells_text
-    _assert_text_contains(cells_text, serving.canonical_sku)
+    # canonical_sku is the MASTERED Rosetta identity resolved via the approved
+    # supplier mapping — deliberately NOT a source substring; its provenance is
+    # the structural serving==candidate==product equality asserted above.
     _assert_text_contains(cells_text, serving.supplier_offering.supplier_sku)
     # product_variant_name is a DETERMINISTIC composition (brand + name parts +
     # size, de-duplicated) — not a verbatim source substring — so its source tie
@@ -554,7 +556,7 @@ def _reset(session):
         session.query(model).delete()
     session.query(models.CatalogueItem).delete()
     session.query(models.CatalogueImport).delete()
-    session.query(models.Product).filter_by(sku_code="10447").delete()
+    session.query(models.Product).filter_by(sku_code="RIMS-HC-0447").delete()
     session.commit()
 
 
@@ -573,10 +575,16 @@ def _seed_supplier(session, supplier_id: int, code: str, name: str):
 
 
 def _seed_product_variant(session):
-    product = session.query(models.Product).filter_by(sku_code="10447").first()
+    """Seed the canonical product plus its APPROVED supplier mapping.
+
+    The canonical Rosetta SKU (RIMS-HC-0447) deliberately differs from the
+    Hill's supplier code (10447): mastering must resolve the product through
+    the supplier mapping, never by assuming supplier SKU == canonical SKU.
+    """
+    product = session.query(models.Product).filter_by(sku_code="RIMS-HC-0447").first()
     if product is None:
         product = models.Product(
-            sku_code="10447",
+            sku_code="RIMS-HC-0447",
             name="Hill's Healthy Cuisine Chicken 82g",
             brand="Hill's",
             category="Food",
@@ -586,6 +594,22 @@ def _seed_product_variant(session):
             updated_at="2026-07-23T00:00:00+00:00",
         )
         session.add(product)
+        session.commit()
+    mapping = session.query(models.CatalogueSupplierProduct).filter_by(
+        supplier_id=14, supplier_sku="10447"
+    ).first()
+    if mapping is None:
+        session.add(
+            models.CatalogueSupplierProduct(
+                supplier_product_key="supplier:14:offer:10447",
+                supplier_id=14,
+                product_variant_id=product.id,
+                supplier_sku="10447",
+                status="active",
+                created_at="2026-07-23T00:00:00+00:00",
+                updated_at="2026-07-23T00:00:00+00:00",
+            )
+        )
         session.commit()
     return product
 

@@ -14,6 +14,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{tempfile.mkdtemp()}/t.db")
 import database  # noqa: E402
 import models  # noqa: E402
 from schemas.catalogue_pipeline.enums import IssueResolutionStatus, ReviewStatus  # noqa: E402
+from services import catalogue_pipeline_persistence as persistence  # noqa: E402
 from services import catalogue_pipeline_stages as stages  # noqa: E402
 
 
@@ -59,7 +60,7 @@ def _reset(session):
     ):
         session.query(model).delete()
     session.query(models.CatalogueImport).filter(models.CatalogueImport.filename.like("stage-services-%")).delete()
-    session.query(models.Product).filter(models.Product.sku_code.in_(("STAGE-SKU-10447", "STAGE-SKU-ALT"))).delete()
+    session.query(models.Product).filter(models.Product.sku_code.in_(("STAGE-SKU-10447", "STAGE-SKU-ALT", "10447"))).delete()
     session.commit()
 
 
@@ -663,6 +664,176 @@ def test_candidate_supplier_identity_cannot_cross_source_catalogues(db):
 
     assert db.query(models.CatalogueReviewDecision).count() == 0
     assert db.query(models.CatalogueSupplierProduct).count() == 0
+
+
+def _seed_supplier_mapping(db, product, *, key="supplier:14:offer:10447", sku="10447", barcode=None):
+    db.add(
+        models.CatalogueSupplierProduct(
+            supplier_product_key=key,
+            supplier_id=14,
+            product_variant_id=product.id,
+            supplier_sku=sku,
+            barcode=barcode,
+            status="active",
+            created_at="2026-07-23T00:00:00+00:00",
+            updated_at="2026-07-23T00:00:00+00:00",
+        )
+    )
+    db.commit()
+
+
+def _default_candidate(db, staging_id: UUID, *, key="resolver-candidate-1"):
+    """Prepare a candidate through the DEFAULT resolver (no explicit resolutions)."""
+    candidate_id = stages.MasteringService(db).prepare_candidate(
+        stages.PrepareMasteringCandidateCommand(catalogue_item_id=staging_id, idempotency_key=key)
+    ).output_ids[0]
+    row = db.query(models.CatalogueMasteringCandidate).filter_by(mastering_candidate_uuid=str(candidate_id)).one()
+    return candidate_id, persistence.mastering_candidate_to_contract(row)
+
+
+def test_resolver_matches_via_supplier_mapping_and_canonical_sku_stays_distinct(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    product = _seed_product(db)  # canonical STAGE-SKU-10447 != supplier sku 10447
+    _seed_supplier_mapping(db, product)
+
+    _, contract = _default_candidate(db, staging_id)
+
+    assert contract.supplier_product_resolution.state.value == "PROPOSED_MATCH"
+    assert contract.supplier_product_resolution.supplier_product_id == "supplier:14:offer:10447"
+    assert contract.product_variant_resolution.state.value == "PROPOSED_MATCH"
+    assert contract.product_variant_resolution.canonical_sku == "STAGE-SKU-10447"
+    assert contract.supplier_product_resolution.supplier_sku == "10447"
+    assert contract.product_variant_resolution.canonical_sku != contract.supplier_product_resolution.supplier_sku
+
+
+def test_supplier_sku_is_never_promoted_to_canonical_sku(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    # A canonical product whose sku_code COINCIDENTALLY equals the supplier SKU,
+    # with no supplier mapping: it must NOT auto-match.
+    db.add(
+        models.Product(
+            sku_code="10447",
+            name="Unrelated product with colliding code",
+            brand="Other",
+            category="Others",
+            storage_rule="any",
+            status="ACTIVE",
+            created_at="2026-07-23T00:00:00+00:00",
+            updated_at="2026-07-23T00:00:00+00:00",
+        )
+    )
+    db.commit()
+
+    candidate_id, contract = _default_candidate(db, staging_id)
+
+    assert contract.product_variant_resolution.state.value == "PROPOSED_CREATE"
+    assert contract.product_variant_resolution.canonical_sku is None
+    with pytest.raises(stages.AmbiguousProductVariant):
+        stages.ReviewDecisionService(db).record_decision(
+            stages.RecordReviewDecisionCommand(
+                mastering_candidate_id=candidate_id,
+                actor_id="reviewer@example.com",
+                review_status=ReviewStatus.APPROVED,
+            )
+        )
+
+
+def test_ambiguous_supplier_identity_is_reviewable_not_fatal(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    product_a = _seed_product(db)
+    product_b = models.Product(
+        sku_code="STAGE-SKU-ALT",
+        name="Alternate canonical product",
+        brand="Hill's",
+        category="Food",
+        storage_rule="any",
+        status="ACTIVE",
+        created_at="2026-07-23T00:00:00+00:00",
+        updated_at="2026-07-23T00:00:00+00:00",
+    )
+    db.add(product_b)
+    db.commit()
+    _seed_supplier_mapping(db, product_a)  # matches by supplier SKU
+    _seed_supplier_mapping(db, product_b, key="supplier:14:offer:barcode", sku="OTHER-SKU", barcode="052742104470")
+
+    candidate_id, contract = _default_candidate(db, staging_id)
+
+    # Ambiguity yields a reviewable candidate, not a failed run.
+    assert contract.supplier_product_resolution.state.value == "AMBIGUOUS"
+    assert contract.product_variant_resolution.state.value == "AMBIGUOUS"
+    with pytest.raises(stages.AmbiguousSupplierOffer):
+        stages.ReviewDecisionService(db).record_decision(
+            stages.RecordReviewDecisionCommand(
+                mastering_candidate_id=candidate_id,
+                actor_id="reviewer@example.com",
+                review_status=ReviewStatus.APPROVED,
+            )
+        )
+
+
+def test_correction_supersedes_candidate_and_only_the_revision_is_decidable(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    candidate_id, contract = _default_candidate(db, staging_id)
+    assert contract.product_variant_resolution.state.value == "PROPOSED_CREATE"
+    product = _seed_product(db)
+
+    correction = stages.ReviseMasteringCandidateCommand(
+        mastering_candidate_id=candidate_id,
+        actor_id="reviewer@example.com",
+        reason="Map to the existing canonical product",
+        product_variant_resolution={
+            "state": "CONFIRMED_MATCH",
+            "canonical_sku": product.sku_code,
+            "product_variant_id": product.sku_code,
+            "product_variant_name": product.name,
+            "product_family_id": None,
+        },
+    )
+    revised = stages.MasteringService(db).revise_candidate(correction)
+    revision_id = revised.output_ids[0]
+    assert revision_id != candidate_id
+
+    old_row = db.query(models.CatalogueMasteringCandidate).filter_by(mastering_candidate_uuid=str(candidate_id)).one()
+    assert old_row.superseded_by_uuid == str(revision_id)
+    audit = db.query(models.CatalogueReviewDecision).filter_by(
+        mastering_candidate_uuid=str(candidate_id), decision_type="mastering_correction"
+    ).one()
+    assert audit.reason == "Map to the existing canonical product"
+
+    # Replaying the identical correction is idempotent.
+    replay = stages.MasteringService(db).revise_candidate(correction)
+    assert replay.output_ids == (revision_id,)
+    assert replay.metrics.reused_count == 1
+
+    # The superseded candidate accepts no decisions; the revision is approvable.
+    with pytest.raises(stages.InvalidStageTransition):
+        stages.ReviewDecisionService(db).record_decision(
+            stages.RecordReviewDecisionCommand(
+                mastering_candidate_id=candidate_id,
+                actor_id="reviewer@example.com",
+                review_status=ReviewStatus.APPROVED,
+            )
+        )
+    decision = stages.ReviewDecisionService(db).record_decision(
+        stages.RecordReviewDecisionCommand(
+            mastering_candidate_id=revision_id,
+            actor_id="reviewer@example.com",
+            review_status=ReviewStatus.APPROVED,
+        )
+    )
+    assert decision.metrics.created_count == 1
+    revision_row = db.query(models.CatalogueMasteringCandidate).filter_by(mastering_candidate_uuid=str(revision_id)).one()
+    revision_contract = persistence.mastering_candidate_to_contract(revision_row)
+    assert revision_contract.metadata["correction"]["revised_from"] == str(candidate_id)
+    assert revision_contract.metadata["correction"]["corrected_sections"] == ["product_variant_resolution"]
 
 
 def test_review_rejects_stale_candidate_revision_and_staging_key_conflicts(db):

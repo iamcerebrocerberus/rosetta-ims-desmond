@@ -81,6 +81,9 @@ class ResolutionState(str, Enum):
     PROPOSED_CREATE = "PROPOSED_CREATE"
     CONFIRMED_MATCH = "CONFIRMED_MATCH"
     CONFIRMED_CREATE = "CONFIRMED_CREATE"
+    # Multiple existing records plausibly match; a human must pick one via a
+    # candidate correction. Never approvable, never fails the run.
+    AMBIGUOUS = "AMBIGUOUS"
     REJECTED = "REJECTED"
 
 

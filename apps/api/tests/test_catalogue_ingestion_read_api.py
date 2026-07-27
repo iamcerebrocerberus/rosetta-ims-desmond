@@ -227,14 +227,27 @@ def test_intermediate_layer_returns_normalized_rows_validation_and_candidates(cl
 
 
 def test_serving_layer_exposes_only_explicit_immutable_publications(client, db, monkeypatch):
+    product = models.Product(
+        sku_code="10447",
+        name="Hill's Healthy Cuisine Chicken 82g",
+        brand="Hill's",
+        category="Food",
+        storage_rule="any",
+        status="ACTIVE",
+        created_at="2026-07-23T00:00:00+00:00",
+        updated_at="2026-07-23T00:00:00+00:00",
+    )
+    db.add(product)
+    db.flush()
+    # Mastering resolves canonical products through the APPROVED supplier
+    # mapping — never by assuming supplier SKU == canonical SKU.
     db.add(
-        models.Product(
-            sku_code="10447",
-            name="Hill's Healthy Cuisine Chicken 82g",
-            brand="Hill's",
-            category="Food",
-            storage_rule="any",
-            status="ACTIVE",
+        models.CatalogueSupplierProduct(
+            supplier_product_key="supplier:14:offer:10447",
+            supplier_id=14,
+            product_variant_id=product.id,
+            supplier_sku="10447",
+            status="active",
             created_at="2026-07-23T00:00:00+00:00",
             updated_at="2026-07-23T00:00:00+00:00",
         )
@@ -334,6 +347,92 @@ def test_serving_layer_exposes_only_explicit_immutable_publications(client, db, 
         "catalogue.pipeline_candidate_apply",
         "catalogue.pipeline_serving_publish",
     }
+
+
+def test_candidate_correction_supersedes_and_publishes_the_corrected_identity(client, db, monkeypatch):
+    """HITL correction lifecycle end-to-end through the API.
+
+    machine candidate (unmatched, unapprovable) -> reviewer corrects the
+    canonical match -> immutable revision supersedes it -> approve/apply/
+    publish the revision -> serving carries the corrected Rosetta identity.
+    """
+    run = _run_pipeline(db, monkeypatch)
+    candidate = db.query(models.CatalogueMasteringCandidate).filter_by(ingestion_run_uuid=str(run)).one()
+    candidate_id = candidate.mastering_candidate_uuid
+
+    # Unmatched machine proposal (no supplier mapping exists): not approvable.
+    rejected = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/review",
+        json={"review_status": "APPROVED"},
+    )
+    assert rejected.status_code == 409
+
+    product = db.query(models.Product).filter_by(sku_code="RIMS-API-1").first()
+    if product is None:
+        product = models.Product(
+            sku_code="RIMS-API-1",
+            name="Hill's Science Plan Adult Chicken 82g",
+            brand="Hill's",
+            category="Food",
+            storage_rule="any",
+            status="ACTIVE",
+            created_at="2026-07-23T00:00:00+00:00",
+            updated_at="2026-07-23T00:00:00+00:00",
+        )
+        db.add(product)
+        db.commit()
+
+    corrected = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/correct",
+        json={
+            "reason": "Matched to the existing Rosetta product by the reviewer.",
+            "product_variant_resolution": {
+                "state": "CONFIRMED_MATCH",
+                "canonical_sku": "RIMS-API-1",
+                "product_variant_id": "RIMS-API-1",
+                "product_variant_name": product.name,
+                "product_family_id": None,
+            },
+        },
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["stage"] == "mastering_correction"
+    revision_id = corrected.json()["output_ids"][0]
+    assert revision_id != candidate_id
+
+    # The superseded candidate accepts no further decisions and is marked in reads.
+    superseded_review = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/review",
+        json={"review_status": "APPROVED"},
+    )
+    assert superseded_review.status_code == 409
+    intermediate = client.get(f"/catalogues/ingestions/{run}/intermediate").json()
+    by_id = {c["mastering_candidate_id"]: c for c in intermediate["mastering_candidates"]}
+    assert by_id[candidate_id]["superseded_by"] == revision_id
+    assert by_id[revision_id]["superseded_by"] is None
+    assert by_id[revision_id]["metadata"]["correction"]["revised_from"] == candidate_id
+
+    # The corrected revision flows to serving with the Rosetta identity —
+    # supplier SKU (10447) and canonical SKU (RIMS-API-1) stay distinct.
+    approve = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{revision_id}/review",
+        json={"review_status": "APPROVED", "reason": "Corrected match verified."},
+    )
+    assert approve.status_code == 200, approve.text
+    assert client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{revision_id}/apply", json={}
+    ).status_code == 200
+    published = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{revision_id}/publish",
+        json={"publication_version": "corrected-v1"},
+    )
+    assert published.status_code == 200, published.text
+
+    serving = client.get(f"/catalogues/ingestions/{run}/serving").json()
+    assert serving["publication_count"] == 1
+    snapshot = serving["current_publications"][0]
+    assert snapshot["canonical_sku"] == "RIMS-API-1"
+    assert snapshot["supplier_offering"]["supplier_sku"] == "10447"
 
 
 def test_validation_resolution_is_run_scoped_and_audited(client, db, monkeypatch):

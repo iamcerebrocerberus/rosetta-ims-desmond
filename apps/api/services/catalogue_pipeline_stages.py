@@ -219,6 +219,29 @@ class PrepareMasteringCandidateCommand:
 
 
 @dataclass(frozen=True)
+class ReviseMasteringCandidateCommand:
+    """Human correction: supersede a candidate with an immutable revised one.
+
+    Only the provided resolution sections change; everything else (trace,
+    lineage, evidence) carries over from the superseded candidate.
+    """
+
+    mastering_candidate_id: UUID
+    actor_id: str
+    reason: str
+    expected_candidate_created_at: str | None = None
+    supplier_product_resolution: SupplierProductResolution | dict[str, Any] | None = None
+    product_variant_resolution: ProductVariantResolution | dict[str, Any] | None = None
+    packaging_resolution: PackagingConfigurationResolution | dict[str, Any] | None = None
+    supplier_price_resolution: SupplierPriceResolution | dict[str, Any] | None = None
+    mbb_resolution: MbbResolution | dict[str, Any] | None = None
+    product_family_resolution: OptionalTextResolution | dict[str, Any] | None = None
+    brand_resolution: OptionalTextResolution | dict[str, Any] | None = None
+    category_resolution: OptionalTextResolution | dict[str, Any] | None = None
+    revised_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class RecordReviewDecisionCommand:
     """Record an explicit review decision for a Mastering Candidate."""
 
@@ -639,6 +662,138 @@ class MasteringService(_TransactionalService):
             metrics=StageMetrics(input_count=1, created_count=created, reused_count=reused),
         )
 
+    def revise_candidate(self, command: ReviseMasteringCandidateCommand) -> StageResult:
+        """Supersede a pending candidate with a human-corrected immutable revision.
+
+        The correction is a NEW candidate row (same normalized-row lineage,
+        merged resolutions) plus an append-only CORRECTION decision on the old
+        one; the old candidate is marked superseded and accepts no further
+        decisions. Deterministic idempotency: repeating the same correction
+        reuses the same revision.
+        """
+
+        corrections = {
+            "supplier_product_resolution": command.supplier_product_resolution,
+            "product_variant_resolution": command.product_variant_resolution,
+            "packaging_resolution": command.packaging_resolution,
+            "supplier_price_resolution": command.supplier_price_resolution,
+            "mbb_resolution": command.mbb_resolution,
+            "product_family_resolution": command.product_family_resolution,
+            "brand_resolution": command.brand_resolution,
+            "category_resolution": command.category_resolution,
+        }
+        corrected_sections = sorted(key for key, value in corrections.items() if value is not None)
+        if not corrected_sections:
+            raise InvalidStageTransition("A candidate correction requires at least one revised resolution section")
+        if not command.reason or not command.reason.strip():
+            raise InvalidStageTransition("A candidate correction requires a reason")
+
+        candidate_row = _candidate_row(self.db, command.mastering_candidate_id)
+        expected_revision_id = _stable_uuid(
+            "mastering-candidate",
+            {
+                "catalogue_item_id": candidate_row.catalogue_item_uuid,
+                "idempotency_key": f"correction:{candidate_row.mastering_candidate_uuid}",
+            },
+        )
+        if candidate_row.superseded_by_uuid:
+            if candidate_row.superseded_by_uuid == str(expected_revision_id):
+                # Idempotent replay of the same correction.
+                return StageResult(
+                    stage="mastering_correction",
+                    output_ids=(expected_revision_id,),
+                    metrics=StageMetrics(input_count=1, reused_count=1),
+                )
+            raise InvalidStageTransition(
+                f"Mastering Candidate {command.mastering_candidate_id} is already superseded by {candidate_row.superseded_by_uuid}"
+            )
+        if command.expected_candidate_created_at and candidate_row.created_at != command.expected_candidate_created_at:
+            raise StaleCandidateRevision(
+                f"Mastering Candidate {command.mastering_candidate_id} current revision is {candidate_row.created_at}; "
+                f"requested {command.expected_candidate_created_at}"
+            )
+        if candidate_row.review_status not in {ReviewStatus.PENDING_REVIEW.value, ReviewStatus.NEEDS_CLARIFICATION.value}:
+            raise InvalidStageTransition(
+                f"Mastering Candidate {command.mastering_candidate_id} is {candidate_row.review_status}; "
+                "only pending candidates can be corrected"
+            )
+
+        old = persistence.mastering_candidate_to_contract(candidate_row)
+
+        def _with_lineage(section):
+            # A human confirmation inherits the candidate's own evidence lineage
+            # unless the reviewer supplies one explicitly.
+            if (
+                isinstance(section, dict)
+                and section.get("state") in {ResolutionState.CONFIRMED_MATCH.value, ResolutionState.CONFIRMED_CREATE.value}
+                and not section.get("lineage")
+            ):
+                return {**section, "lineage": old.lineage.model_dump(mode="json")}
+            return section
+
+        merged = {
+            key: (_with_lineage(value) if value is not None else getattr(old, key))
+            for key, value in corrections.items()
+        }
+        revision_metadata = {
+            **old.metadata,
+            "correction": {
+                "revised_from": str(old.mastering_candidate_id),
+                "revised_by": command.actor_id,
+                "reason": command.reason,
+                "corrected_sections": corrected_sections,
+            },
+        }
+        # The revision, supersession marker, and audit decision must land in ONE
+        # transaction — suppress the nested prepare's own commit.
+        commit_flag = self.commit
+        self.commit = False
+        try:
+            prepared = self.prepare_candidate(
+                PrepareMasteringCandidateCommand(
+                    catalogue_item_id=old.catalogue_item_id,
+                    idempotency_key=f"correction:{old.mastering_candidate_id}",
+                    **merged,
+                    created_at=command.revised_at,
+                    metadata=revision_metadata,
+                )
+            )
+        finally:
+            self.commit = commit_flag
+        revision_id = prepared.output_ids[0]
+
+        if not candidate_row.superseded_by_uuid:
+            decided_at = command.revised_at or _now()
+            self.db.add(
+                models.CatalogueReviewDecision(
+                    review_decision_uuid=str(
+                        _stable_uuid("mastering-correction", {"candidate": str(old.mastering_candidate_id)})
+                    ),
+                    mastering_candidate_uuid=str(old.mastering_candidate_id),
+                    decision_type="mastering_correction",
+                    review_status=None,
+                    actor_id=command.actor_id,
+                    actor_display_name=command.actor_id,
+                    decided_at=_iso(decided_at),
+                    reason=command.reason,
+                    details_json=_json_dumps(
+                        {
+                            "revised_to": str(revision_id),
+                            "corrected_sections": corrected_sections,
+                            "candidate_snapshot": old.model_dump(mode="json"),
+                        }
+                    ),
+                    created_at=_iso(decided_at),
+                )
+            )
+            candidate_row.superseded_by_uuid = str(revision_id)
+        self._finish()
+        return StageResult(
+            stage="mastering_correction",
+            output_ids=(revision_id,),
+            metrics=prepared.metrics,
+        )
+
 
 class ReviewDecisionService(_TransactionalService):
     """Record explicit append-only review decisions for mastering candidates."""
@@ -650,6 +805,11 @@ class ReviewDecisionService(_TransactionalService):
             raise InvalidStageTransition("APPROVED_WITH_OVERRIDE requires override_reason")
 
         candidate = _candidate_row(self.db, command.mastering_candidate_id)
+        if candidate.superseded_by_uuid:
+            raise InvalidStageTransition(
+                f"Mastering Candidate {command.mastering_candidate_id} was superseded by correction "
+                f"{candidate.superseded_by_uuid}; decide on the revision instead"
+            )
         if command.expected_candidate_created_at and candidate.created_at != command.expected_candidate_created_at:
             raise StaleCandidateRevision(
                 f"Mastering Candidate {command.mastering_candidate_id} current revision is {candidate.created_at}; "
@@ -1259,7 +1419,15 @@ def _default_supplier_product_resolution(db: Session, staging: NormalizedRowV1) 
     barcode = _proposal_text(staging.normalized_fields.barcode) or staging.raw_fields.barcode
     matches = _supplier_product_matches(db, supplier_id=supplier_id, supplier_sku=supplier_sku, barcode=barcode)
     if len(matches) > 1:
-        raise AmbiguousSupplierOffer("Supplier SKU/barcode resolves to multiple supplier offerings")
+        # Multiple plausible offerings: never guess and never fail the run —
+        # produce an unapprovable candidate a reviewer must correct.
+        return {
+            "state": ResolutionState.AMBIGUOUS.value,
+            "supplier_id": supplier_id,
+            "supplier_product_id": None,
+            "supplier_sku": supplier_sku,
+            "barcode": barcode,
+        }
     if matches:
         match = matches[0]
         return {
@@ -1284,12 +1452,23 @@ def _default_product_variant_resolution(db: Session, staging: NormalizedRowV1) -
     supplier_sku = _proposal_text(staging.normalized_fields.supplier_sku) or staging.raw_fields.supplier_sku
     barcode = _proposal_text(staging.normalized_fields.barcode) or staging.raw_fields.barcode
     supplier_id = _supplier_id_from_source(db, staging.trace.supplier_catalogue_id)
-    product = _exact_product_match(
-        db,
-        supplier_id=supplier_id,
-        supplier_sku=supplier_sku,
-        barcode=barcode,
-    )
+    try:
+        product = _exact_product_match(
+            db,
+            supplier_id=supplier_id,
+            supplier_sku=supplier_sku,
+            barcode=barcode,
+        )
+    except AmbiguousProductVariant:
+        # Conflicting canonical matches: reviewable, not fatal.
+        return {
+            "state": ResolutionState.AMBIGUOUS.value,
+            "canonical_sku": None,
+            "product_variant_id": None,
+            "product_variant_name": proposed_name,
+            "proposed_name": proposed_name,
+            "product_family_id": None,
+        }
     if product is not None:
         return {
             "state": ResolutionState.PROPOSED_MATCH.value,
@@ -1355,8 +1534,10 @@ def _exact_product_match(
         raise AmbiguousProductVariant("Supplier identity resolves to multiple canonical products")
     if product_ids:
         return db.get(models.Product, next(iter(product_ids)))
-    if supplier_sku:
-        return db.query(models.Product).filter_by(sku_code=supplier_sku).first()
+    # Deliberately NO fallback from supplier SKU to the canonical sku_code
+    # namespace: supplier SKUs are supplier-scoped and a coincidental collision
+    # with an unrelated canonical SKU must not auto-match. Unmapped products
+    # stay PROPOSED_CREATE until a reviewer corrects the candidate.
     return None
 
 
@@ -1420,7 +1601,7 @@ def _candidate_supplier_product_key(candidate: MasteringCandidateV1) -> str:
 def _assert_candidate_applicable(db: Session, candidate: MasteringCandidateV1) -> None:
     supplier = candidate.supplier_product_resolution
     expected_supplier_id = _supplier_id_from_source(db, candidate.trace.supplier_catalogue_id)
-    if supplier.state == ResolutionState.UNRESOLVED or supplier.supplier_id is None:
+    if supplier.state in {ResolutionState.UNRESOLVED, ResolutionState.AMBIGUOUS} or supplier.supplier_id is None:
         raise AmbiguousSupplierOffer("Candidate requires a resolved supplier identity before approval")
     if expected_supplier_id is not None and supplier.supplier_id != expected_supplier_id:
         raise SupplierContractMismatch("Candidate supplier resolution does not match its source catalogue")

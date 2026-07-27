@@ -360,6 +360,9 @@ class CatalogueMasteringCandidate(Base):
     brand_resolution_json = Column(Text, nullable=True)
     category_resolution_json = Column(Text, nullable=True)
     external_mappings_json = Column(Text, nullable=True)
+    # Set when a human correction produced a revised candidate for the same
+    # normalized row; a superseded candidate accepts no further decisions.
+    superseded_by_uuid = Column(String(36), nullable=True)
     created_at = Column(String, nullable=False)
     metadata_json = Column(Text, nullable=True)
 
