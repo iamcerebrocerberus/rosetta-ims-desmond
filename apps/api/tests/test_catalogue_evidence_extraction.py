@@ -1,4 +1,4 @@
-"""Focused tests for the typed extraction boundary immediately before Raw."""
+"""Focused tests for typed Staging extraction after Raw completion."""
 
 from __future__ import annotations
 

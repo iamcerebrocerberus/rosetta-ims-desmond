@@ -61,10 +61,9 @@ def catalogue_ingestion_flow(*, ingestion_run_id: UUID) -> CatalogueFlowResult:
 
     try:
         # RAW (file preserved, verified, audited) completes before any stage
-        # that reads the file. STAGING then extracts verbatim evidence and
-        # deterministically conforms it to normalized rows via the supplier
-        # contract. INTERMEDIATE (validate + master) is business interpretation
-        # of those normalized rows.
+        # that reads the file. STAGING extracts and persists verbatim evidence.
+        # INTERMEDIATE applies the supplier contract, persists normalized
+        # claims, validates them and prepares mastering candidates.
         raw = raw_stage_task(run_id)
         runtime_contract = resolve_recorded_contract_task(run_id)
         evidence = extract_source_evidence_task(run_id)

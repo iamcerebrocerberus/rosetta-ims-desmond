@@ -1,8 +1,8 @@
-"""Typed, source-located extraction for the boundary immediately before Raw.
+"""Typed, source-located extraction for Staging after Raw has completed.
 
 This module deliberately does not parse catalogue evidence into product fields.
 It records what was observed and where it was observed. Semantic interpretation
-belongs after Raw persistence.
+belongs in Intermediate after Staging evidence persistence.
 """
 
 from __future__ import annotations

@@ -135,7 +135,7 @@ def normalize_evidence_task(
     raw_observation_ids: tuple[UUID, ...],
     runtime_contract,
 ) -> ConformanceOutcome:
-    """Staging conformance: map PERSISTED step-4 evidence to normalized rows by durable ID.
+    """Intermediate conformance: map persisted Staging evidence to normalized claims.
 
     Reloads each observation from persistence — never the extraction task's
     in-memory objects — so conformance is grounded against exactly what the
@@ -166,7 +166,7 @@ def normalize_evidence_task(
 def build_normalized_rows_task(
     conformance: ConformanceOutcome,
 ) -> tuple[tuple[UUID, ...], int, int]:
-    """Persist normalized rows (Staging output) as one ATOMIC batch.
+    """Persist normalized claims (Intermediate output) as one atomic batch.
 
     Each build stages within the shared transaction and a single commit
     lands the whole batch — a mid-batch failure leaves no partial rows.

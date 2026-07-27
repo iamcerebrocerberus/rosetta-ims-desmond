@@ -274,7 +274,7 @@ class ExtractedEvidenceService(_TransactionalService):
 
     def capture(self, command: CaptureExtractedEvidenceCommand) -> StageResult:
         if not command.observations:
-            return StageResult(stage="raw_capture", metrics=StageMetrics(input_count=0))
+            return StageResult(stage="extracted_evidence_capture", metrics=StageMetrics(input_count=0))
 
         run, source_document, runtime_contract = _resolve_run_source_contract(self.db, command)
         trace_profile = ExtractionProfileReference(
@@ -305,7 +305,7 @@ class ExtractedEvidenceService(_TransactionalService):
             source_document.updated_at = _iso(_now())
         self._finish()
         return StageResult(
-            stage="raw_capture",
+            stage="extracted_evidence_capture",
             output_ids=tuple(output_ids),
             metrics=StageMetrics(input_count=len(command.observations), created_count=created, reused_count=reused),
         )
@@ -554,7 +554,7 @@ class NormalizedRowService(_TransactionalService):
             created = 1
         self._finish()
         return StageResult(
-            stage="staging",
+            stage="intermediate_normalization",
             output_ids=(catalogue_item_id,),
             metrics=StageMetrics(input_count=len(command.raw_observation_ids), created_count=created, reused_count=reused),
         )

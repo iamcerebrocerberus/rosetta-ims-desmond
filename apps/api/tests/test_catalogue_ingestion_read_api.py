@@ -182,15 +182,23 @@ def test_raw_layer_returns_file_facts_and_attempts(client, db, monkeypatch):
     assert "source_ref" not in body["source"]
 
 
-def test_staging_layer_returns_evidence_and_normalized_rows(client, db, monkeypatch):
+def test_staging_layer_returns_only_extracted_evidence(client, db, monkeypatch):
     run = _run_pipeline(db, monkeypatch)
     body = client.get(f"/catalogues/ingestions/{run}/staging").json()
 
     assert body["layer"] == "staging"
-    # Verbatim evidence (audit record) + the contract-conformed normalized rows.
+    # Staging preserves what extraction observed; interpretation starts later.
     assert body["evidence_count"] == 1
     assert body["evidence"][0]["extraction_method"] == "MODEL_VISION"
-    assert body["normalized_row_count"] == 1
+    assert "normalized_rows" not in body
+
+
+def test_intermediate_layer_returns_normalized_rows_validation_and_candidates(client, db, monkeypatch):
+    run = _run_pipeline(db, monkeypatch)
+    body = client.get(f"/catalogues/ingestions/{run}/intermediate").json()
+
+    assert body["layer"] == "intermediate"
+    assert len(body["normalized_rows"]) == 1
     row = body["normalized_rows"][0]
     assert row["raw_fields"]["supplier_sku"] == "10447"
     fields = row["normalized_fields"]
@@ -199,15 +207,6 @@ def test_staging_layer_returns_evidence_and_normalized_rows(client, db, monkeypa
     assert fields["brand"]["value"] == "Hill's"
     assert fields["cost"]["currency"] == "HKD"
     assert fields["cost"]["amount"] == "13.10"
-
-
-def test_intermediate_layer_returns_validation_and_candidates(client, db, monkeypatch):
-    run = _run_pipeline(db, monkeypatch)
-    body = client.get(f"/catalogues/ingestions/{run}/intermediate").json()
-
-    assert body["layer"] == "intermediate"
-    # Business interpretation only — normalized rows live under /staging.
-    assert "normalized_rows" not in body and "claims" not in body
     assert len(body["mastering_candidates"]) == 1
     assert body["mastering_candidates"][0]["review_status"] == "PENDING_REVIEW"
     assert isinstance(body["validation_issues"], list)
