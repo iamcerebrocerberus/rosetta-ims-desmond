@@ -157,16 +157,16 @@ For CIS-104 acceptance, "pending review" means the Prefect machine run is
 terminal and a candidate remains `PENDING_REVIEW`; it is not a separate run
 status.
 
-The acceptance test continues from that explicit review boundary by calling the
-same review/application/publication services that a later HITL API would call.
+The acceptance test continues from that explicit review boundary through the
+same review/application/publication services used by the run-scoped HITL API.
 
 ## Deferred Work
 
-- A HITL API or UI for review and validation-issue resolution.
+- HITL UI integration for the implemented run-scoped command API.
 - Automatic Product Variant creation or matching beyond the current approved
   service boundary. The acceptance fixture uses an existing canonical SKU.
-- A public v2 Serving retrieval endpoint, if product requirements later need
-  HTTP retrieval rather than service-level retrieval.
+- Consumer cutover from legacy inventory reads to the run-scoped Serving
+  retrieval endpoint.
 - Wider supplier examples beyond the currently supported evidence-backed
   Hill's and Alfamedic runtime contracts.
 

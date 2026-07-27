@@ -30,6 +30,7 @@ _ALL = set(VALID_ROLES)
 # capability -> roles that hold it.
 CAPABILITIES: dict[str, set[str]] = {
     "catalogue_onboard": _ALL,                       # match / new SKU / reject / edit / bulk / import
+    "catalogue_publish": {ROLE_ADMIN, ROLE_BIZOPS},  # apply approved state and publish serving snapshots
     "product_edit":      _ALL,                       # PATCH product, cost, pack, tags, stock, unverify
     "product_sensitive": {ROLE_ADMIN, ROLE_BIZOPS},  # name / category / status / hero_sku
     "catalogue_admin":   {ROLE_ADMIN},               # delete whole imports / clear the queue

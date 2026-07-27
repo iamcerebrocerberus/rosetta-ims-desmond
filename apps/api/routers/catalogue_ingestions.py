@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +16,8 @@ import models
 from permissions import require_capability
 from services import audit_log
 from services import catalogue_pipeline_persistence as persistence
+from services import catalogue_pipeline_stages as stages
+from schemas.catalogue_pipeline.enums import IssueResolutionStatus, ReviewStatus
 from services.catalogue_submission import (
     CatalogueIngestionStatus,
     CatalogueSubmissionCommand,
@@ -70,6 +73,36 @@ class CatalogueIngestionStatusResponse(BaseModel):
     items_extracted: int | None = None
     metrics: dict[str, Any] | None = None
     error_summary: dict[str, Any] | str | None = None
+
+
+class ValidationIssueResolutionRequest(BaseModel):
+    resolution_status: IssueResolutionStatus
+    resolution_note: str | None = None
+    resolved_at: datetime | None = None
+
+
+class MasteringReviewRequest(BaseModel):
+    review_status: ReviewStatus
+    reason: str | None = None
+    override_reason: str | None = None
+    expected_candidate_created_at: str | None = None
+    decided_at: datetime | None = None
+
+
+class CommercialApplicationRequest(BaseModel):
+    applied_at: datetime | None = None
+
+
+class ServingPublicationRequest(BaseModel):
+    publication_version: str = Field(..., min_length=1)
+    published_at: datetime | None = None
+
+
+class PipelineActionResponse(BaseModel):
+    stage: str
+    status: str
+    output_ids: list[str]
+    metrics: dict[str, int]
 
 
 @router.post(
@@ -161,6 +194,170 @@ def get_catalogue_ingestion_status(
     except Exception as exc:
         raise _http_error(exc) from exc
     return _status_response(result)
+
+
+@router.post(
+    "/ingestions/{run_uuid}/validation-issues/{validation_issue_id}/resolve",
+    response_model=PipelineActionResponse,
+)
+def resolve_catalogue_validation_issue(
+    run_uuid: UUID,
+    validation_issue_id: UUID,
+    body: ValidationIssueResolutionRequest,
+    request: Request,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(database.get_db),
+    user: models.User = Depends(require_capability("catalogue_onboard")),
+):
+    _load_run_or_404(db, run_uuid)
+    _load_run_validation_issue_or_404(db, run_uuid, validation_issue_id)
+    actor_id = _actor_id(user)
+    try:
+        result = stages.CatalogueValidationService(db, commit=False).resolve_issue(
+            stages.ResolveValidationIssueCommand(
+                validation_issue_id=validation_issue_id,
+                resolver_id=actor_id,
+                resolution_status=body.resolution_status,
+                resolution_note=body.resolution_note,
+                resolved_at=body.resolved_at,
+                idempotency_key=idempotency_key,
+            )
+        )
+        _audit_pipeline_action(
+            db,
+            request=request,
+            user=user,
+            action="catalogue.pipeline_validation_resolve",
+            entity_type="catalogue_validation_issue",
+            entity_id=validation_issue_id,
+            result=result,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise _stage_http_error(exc) from exc
+    return _action_response(result)
+
+
+@router.post(
+    "/ingestions/{run_uuid}/mastering-candidates/{mastering_candidate_id}/review",
+    response_model=PipelineActionResponse,
+)
+def review_catalogue_mastering_candidate(
+    run_uuid: UUID,
+    mastering_candidate_id: UUID,
+    body: MasteringReviewRequest,
+    request: Request,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(database.get_db),
+    user: models.User = Depends(require_capability("catalogue_onboard")),
+):
+    _load_run_or_404(db, run_uuid)
+    _load_run_candidate_or_404(db, run_uuid, mastering_candidate_id)
+    try:
+        result = stages.ReviewDecisionService(db, commit=False).record_decision(
+            stages.RecordReviewDecisionCommand(
+                mastering_candidate_id=mastering_candidate_id,
+                actor_id=_actor_id(user),
+                review_status=body.review_status,
+                reason=body.reason,
+                override_reason=body.override_reason,
+                expected_candidate_created_at=body.expected_candidate_created_at,
+                decided_at=body.decided_at,
+                idempotency_key=idempotency_key,
+            )
+        )
+        _audit_pipeline_action(
+            db,
+            request=request,
+            user=user,
+            action="catalogue.pipeline_candidate_review",
+            entity_type="catalogue_mastering_candidate",
+            entity_id=mastering_candidate_id,
+            result=result,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise _stage_http_error(exc) from exc
+    return _action_response(result)
+
+
+@router.post(
+    "/ingestions/{run_uuid}/mastering-candidates/{mastering_candidate_id}/apply",
+    response_model=PipelineActionResponse,
+)
+def apply_catalogue_mastering_candidate(
+    run_uuid: UUID,
+    mastering_candidate_id: UUID,
+    body: CommercialApplicationRequest,
+    request: Request,
+    db: Session = Depends(database.get_db),
+    user: models.User = Depends(require_capability("catalogue_publish")),
+):
+    _load_run_or_404(db, run_uuid)
+    _load_run_candidate_or_404(db, run_uuid, mastering_candidate_id)
+    try:
+        result = stages.ApprovedCommercialStateService(db, commit=False).apply_approved_candidate(
+            stages.ApplyApprovedCandidateCommand(
+                mastering_candidate_id=mastering_candidate_id,
+                applied_at=body.applied_at,
+            )
+        )
+        _audit_pipeline_action(
+            db,
+            request=request,
+            user=user,
+            action="catalogue.pipeline_candidate_apply",
+            entity_type="catalogue_mastering_candidate",
+            entity_id=mastering_candidate_id,
+            result=result,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise _stage_http_error(exc) from exc
+    return _action_response(result)
+
+
+@router.post(
+    "/ingestions/{run_uuid}/mastering-candidates/{mastering_candidate_id}/publish",
+    response_model=PipelineActionResponse,
+)
+def publish_catalogue_serving_item(
+    run_uuid: UUID,
+    mastering_candidate_id: UUID,
+    body: ServingPublicationRequest,
+    request: Request,
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    db: Session = Depends(database.get_db),
+    user: models.User = Depends(require_capability("catalogue_publish")),
+):
+    _load_run_or_404(db, run_uuid)
+    _load_run_candidate_or_404(db, run_uuid, mastering_candidate_id)
+    try:
+        result = stages.ServingPublicationService(db, commit=False).publish(
+            stages.PublishServingItemCommand(
+                mastering_candidate_id=mastering_candidate_id,
+                publication_version=body.publication_version,
+                published_at=body.published_at,
+                idempotency_key=idempotency_key,
+            )
+        )
+        _audit_pipeline_action(
+            db,
+            request=request,
+            user=user,
+            action="catalogue.pipeline_serving_publish",
+            entity_type="catalogue_serving_publication",
+            entity_id=result.output_ids[0] if result.output_ids else mastering_candidate_id,
+            result=result,
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        raise _stage_http_error(exc) from exc
+    return _action_response(result)
 
 
 # ── Per-layer read API ───────────────────────────────────────────────────────
@@ -340,6 +537,85 @@ def _load_run_or_404(db: Session, run_uuid: UUID) -> models.IngestionRun:
     return run
 
 
+def _load_run_candidate_or_404(
+    db: Session,
+    run_uuid: UUID,
+    mastering_candidate_id: UUID,
+) -> models.CatalogueMasteringCandidate:
+    candidate = db.query(models.CatalogueMasteringCandidate).filter_by(
+        mastering_candidate_uuid=str(mastering_candidate_id),
+        ingestion_run_uuid=str(run_uuid),
+    ).first()
+    if candidate is None:
+        raise HTTPException(
+            status_code=404,
+            detail=_detail(
+                "MASTERING_CANDIDATE_NOT_FOUND",
+                f"Mastering candidate {mastering_candidate_id} was not found in ingestion run {run_uuid}",
+            ),
+        )
+    return candidate
+
+
+def _load_run_validation_issue_or_404(
+    db: Session,
+    run_uuid: UUID,
+    validation_issue_id: UUID,
+) -> models.CatalogueValidationIssue:
+    issue = db.query(models.CatalogueValidationIssue).filter_by(
+        validation_issue_uuid=str(validation_issue_id),
+        ingestion_run_uuid=str(run_uuid),
+    ).first()
+    if issue is None:
+        raise HTTPException(
+            status_code=404,
+            detail=_detail(
+                "VALIDATION_ISSUE_NOT_FOUND",
+                f"Validation issue {validation_issue_id} was not found in ingestion run {run_uuid}",
+            ),
+        )
+    return issue
+
+
+def _actor_id(user: models.User) -> str:
+    return getattr(user, "username", None) or str(getattr(user, "id", ""))
+
+
+def _audit_pipeline_action(
+    db: Session,
+    *,
+    request: Request,
+    user: models.User,
+    action: str,
+    entity_type: str,
+    entity_id: UUID | str,
+    result: stages.StageResult,
+) -> None:
+    audit_log.record(
+        db,
+        action=action,
+        actor=user,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        details={
+            "stage": result.stage,
+            "status": result.status,
+            "output_ids": [str(item) for item in result.output_ids],
+            "metrics": vars(result.metrics),
+        },
+        request=request,
+    )
+
+
+def _action_response(result: stages.StageResult) -> PipelineActionResponse:
+    return PipelineActionResponse(
+        stage=result.stage,
+        status=result.status,
+        output_ids=[str(item) for item in result.output_ids],
+        metrics=vars(result.metrics),
+    )
+
+
 def _source_summary(source: models.CatalogueSourceDocument) -> dict[str, Any]:
     import json as _json
 
@@ -418,6 +694,30 @@ def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, CatalogueSubmissionError):
         return HTTPException(status_code=400, detail=_detail("CATALOGUE_SUBMISSION_ERROR", str(exc)))
     return HTTPException(status_code=500, detail=_detail("INTERNAL_ERROR", "Catalogue submission failed"))
+
+
+def _stage_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, stages.UpstreamRecordNotFound):
+        return HTTPException(status_code=404, detail=_detail("PIPELINE_RECORD_NOT_FOUND", str(exc)))
+    if isinstance(
+        exc,
+        (
+            stages.BlockingValidationIssues,
+            stages.ConcurrentModification,
+            stages.IdempotencyConflict,
+            stages.InvalidStageTransition,
+            stages.MissingOrIncompatibleLineage,
+            stages.PublicationIneligible,
+            stages.StaleCandidateRevision,
+            stages.SupplierContractMismatch,
+            stages.AmbiguousProductVariant,
+            stages.AmbiguousSupplierOffer,
+        ),
+    ):
+        return HTTPException(status_code=409, detail=_detail("PIPELINE_TRANSITION_CONFLICT", str(exc)))
+    if isinstance(exc, stages.CatalogueStageError):
+        return HTTPException(status_code=422, detail=_detail("PIPELINE_ACTION_INVALID", str(exc)))
+    return HTTPException(status_code=500, detail=_detail("INTERNAL_ERROR", "Catalogue pipeline action failed"))
 
 
 def _detail(code: str, message: str) -> dict[str, str]:
