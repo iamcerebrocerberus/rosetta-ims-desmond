@@ -209,6 +209,12 @@ def get_staging_layer(
     """
     _load_run_or_404(db, run_uuid)
     run = str(run_uuid)
+    extraction_attempts = (
+        db.query(models.CatalogueExtractionAttempt)
+        .filter_by(ingestion_run_uuid=run)
+        .order_by(models.CatalogueExtractionAttempt.id)
+        .all()
+    )
     evidence = [
         persistence.extracted_evidence_to_contract(r).model_dump(mode="json")
         for r in db.query(models.CatalogueExtractedEvidence)
@@ -219,8 +225,35 @@ def get_staging_layer(
     return {
         "ingestion_run_id": run,
         "layer": "staging",
+        "extraction_attempts": [
+            _extraction_attempt_summary(attempt)
+            for attempt in extraction_attempts
+        ],
         "evidence_count": len(evidence),
         "evidence": evidence,
+    }
+
+
+def _extraction_attempt_summary(
+    attempt: models.CatalogueExtractionAttempt,
+) -> dict[str, Any]:
+    import json as _json
+
+    return {
+        "attempt_id": attempt.attempt_uuid,
+        "status": attempt.status,
+        "source_format": attempt.source_format,
+        "provider": attempt.provider,
+        "model": attempt.model_name,
+        "started_at": attempt.started_at,
+        "completed_at": attempt.completed_at,
+        "units_attempted": attempt.units_attempted,
+        "units_completed": attempt.units_completed,
+        "empty_units": attempt.empty_units,
+        "observation_count": attempt.observation_count,
+        "unit_outcomes": _json.loads(attempt.unit_outcomes_json or "[]"),
+        "warnings": _json.loads(attempt.warnings_json or "[]"),
+        "errors": _json.loads(attempt.errors_json or "[]"),
     }
 
 

@@ -46,6 +46,9 @@ VISION_THINKING_LEVEL = os.environ.get("CATALOGUE_VISION_THINKING_LEVEL", "LOW")
 # A multi-page PDF is N sequential provider round-trips otherwise; run the
 # per-page vision calls concurrently, bounded here (env-overridable).
 _VISION_CONCURRENCY = max(1, int(os.environ.get("CATALOGUE_VISION_CONCURRENCY", "6")))
+# Retry a failed page inside the same extraction attempt so successful pages
+# are not re-sent merely because one provider call was throttled.
+_VISION_UNIT_RETRIES = max(0, int(os.environ.get("CATALOGUE_VISION_UNIT_RETRIES", "2")))
 
 
 class ExtractionStatus(str, Enum):
@@ -66,6 +69,43 @@ class ExtractionError(BaseModel):
     unit_key: str | None = None
     provider: str | None = None
     retryable: bool = False
+
+
+class ExtractionUnitStatus(str, Enum):
+    """Terminal outcome for one independently extractable source unit."""
+
+    EVIDENCE_CAPTURED = "EVIDENCE_CAPTURED"
+    NO_CATALOGUE_EVIDENCE = "NO_CATALOGUE_EVIDENCE"
+    FAILED_RETRYABLE = "FAILED_RETRYABLE"
+    FAILED_PERMANENT = "FAILED_PERMANENT"
+
+
+class ExtractionUnitOutcome(BaseModel):
+    """Completeness accounting for one page, worksheet, document or image."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    unit_key: str = Field(..., min_length=1)
+    status: ExtractionUnitStatus
+    observation_count: int = Field(0, ge=0)
+    attempt_count: int = Field(1, ge=1)
+    provider: str | None = None
+    provider_request_id: str | None = None
+    error_code: str | None = None
+    message: str | None = None
+
+    @model_validator(mode="after")
+    def _status_matches_count(self):
+        if self.status == ExtractionUnitStatus.EVIDENCE_CAPTURED and self.observation_count <= 0:
+            raise ValueError("EVIDENCE_CAPTURED requires at least one observation")
+        if self.status != ExtractionUnitStatus.EVIDENCE_CAPTURED and self.observation_count:
+            raise ValueError("Only EVIDENCE_CAPTURED may carry observations")
+        if self.status in {
+            ExtractionUnitStatus.FAILED_RETRYABLE,
+            ExtractionUnitStatus.FAILED_PERMANENT,
+        } and not self.error_code:
+            raise ValueError("Failed extraction units require an error code")
+        return self
 
 
 class ExtractedEvidence(BaseModel):
@@ -120,6 +160,7 @@ class ExtractionResult(BaseModel):
     units_attempted: int = Field(..., ge=0)
     units_completed: int = Field(..., ge=0)
     empty_units: int = Field(0, ge=0, description="Units explicitly classified as containing no catalogue evidence.")
+    unit_outcomes: tuple[ExtractionUnitOutcome, ...] = ()
     warnings: tuple[str, ...] = ()
     errors: tuple[ExtractionError, ...] = ()
 
@@ -129,6 +170,25 @@ class ExtractionResult(BaseModel):
             raise ValueError("units_completed cannot exceed units_attempted")
         if self.empty_units > self.units_completed:
             raise ValueError("empty_units cannot exceed units_completed")
+        if self.unit_outcomes:
+            if len(self.unit_outcomes) != self.units_attempted:
+                raise ValueError("unit_outcomes must account for every attempted unit")
+            keys = [item.unit_key for item in self.unit_outcomes]
+            if len(keys) != len(set(keys)):
+                raise ValueError("unit_outcome keys must be unique")
+            completed = sum(
+                item.status in {
+                    ExtractionUnitStatus.EVIDENCE_CAPTURED,
+                    ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE,
+                }
+                for item in self.unit_outcomes
+            )
+            empty = sum(
+                item.status == ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE
+                for item in self.unit_outcomes
+            )
+            if completed != self.units_completed or empty != self.empty_units:
+                raise ValueError("unit_outcomes do not match completeness counters")
         if self.status == ExtractionStatus.COMPLETE:
             if not self.observations and not self.empty_units:
                 raise ValueError("COMPLETE extraction requires observations or explicit empty-unit accounting")
@@ -289,6 +349,7 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
     observations: list[ExtractedEvidence] = []
     warnings: list[str] = []
     errors: list[ExtractionError] = []
+    unit_outcomes: list[ExtractionUnitOutcome] = []
     completed = 0
     sheets = tuple(workbook.worksheets)
     try:
@@ -337,18 +398,42 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
                         )
                     )
             except Exception:
-                errors.append(
-                    ExtractionError(
+                error = ExtractionError(
                         code="SPREADSHEET_SHEET_READ_ERROR",
                         message="One spreadsheet sheet could not be read completely",
                         unit_key=f"sheet:{sheet.title}",
                         provider="openpyxl",
+                    )
+                errors.append(error)
+                unit_outcomes.append(
+                    ExtractionUnitOutcome(
+                        unit_key=f"sheet:{sheet.title}",
+                        status=ExtractionUnitStatus.FAILED_PERMANENT,
+                        provider="openpyxl",
+                        error_code=error.code,
+                        message=error.message,
                     )
                 )
                 continue
             completed += 1
             if not observed_rows:
                 warnings.append(f"sheet {sheet.title!r} contained no non-empty rows")
+                unit_outcomes.append(
+                    ExtractionUnitOutcome(
+                        unit_key=f"sheet:{sheet.title}",
+                        status=ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE,
+                        provider="openpyxl",
+                    )
+                )
+            else:
+                unit_outcomes.append(
+                    ExtractionUnitOutcome(
+                        unit_key=f"sheet:{sheet.title}",
+                        status=ExtractionUnitStatus.EVIDENCE_CAPTURED,
+                        observation_count=observed_rows,
+                        provider="openpyxl",
+                    )
+                )
     finally:
         workbook.close()
 
@@ -357,6 +442,11 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
         observations=observations,
         units_attempted=len(sheets),
         units_completed=completed,
+        empty_units=sum(
+            item.status == ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE
+            for item in unit_outcomes
+        ),
+        unit_outcomes=unit_outcomes,
         warnings=warnings,
         errors=errors,
     )
@@ -430,8 +520,21 @@ def _extract_csv(content: bytes) -> ExtractionResult:
     return _build_result(
         SourceFormat.CSV,
         observations=observations,
-        units_attempted=len(rows),
-        units_completed=len(rows),
+        units_attempted=1,
+        units_completed=1,
+        empty_units=0 if observations else 1,
+        unit_outcomes=[
+            ExtractionUnitOutcome(
+                unit_key="csv:1",
+                status=(
+                    ExtractionUnitStatus.EVIDENCE_CAPTURED
+                    if observations
+                    else ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE
+                ),
+                observation_count=len(observations),
+                provider="python-csv",
+            )
+        ],
     )
 
 
@@ -463,8 +566,21 @@ def _extract_text(content: bytes, *, source_format: SourceFormat) -> ExtractionR
     return _build_result(
         source_format,
         observations=observations,
-        units_attempted=len(lines),
-        units_completed=len(lines),
+        units_attempted=1,
+        units_completed=1,
+        empty_units=0 if observations else 1,
+        unit_outcomes=[
+            ExtractionUnitOutcome(
+                unit_key="text:1",
+                status=(
+                    ExtractionUnitStatus.EVIDENCE_CAPTURED
+                    if observations
+                    else ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE
+                ),
+                observation_count=len(observations),
+                provider="python-text",
+            )
+        ],
     )
 
 
@@ -482,12 +598,19 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
     observations: list[ExtractedEvidence] = []
     warnings: list[str] = []
     errors: list[ExtractionError] = []
+    unit_outcomes: list[ExtractionUnitOutcome] = []
     completed = 0
     empty_units = 0
 
     if not pages:
         warnings.append("PDF contained no pages")
-        return _build_result(SourceFormat.PDF, observations=observations, units_attempted=0, units_completed=0)
+        return _build_result(
+            SourceFormat.PDF,
+            observations=observations,
+            units_attempted=0,
+            units_completed=0,
+            unit_outcomes=[],
+        )
 
     # Every catalogue page is extracted via the vision provider so tables yield
     # column-labeled cells the supplier contract can map deterministically. The
@@ -503,7 +626,23 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
             )
             for page_number in range(1, len(pages) + 1)
         ]
-        return _build_result(SourceFormat.PDF, observations=observations, units_attempted=len(pages), units_completed=0, errors=errors)
+        return _build_result(
+            SourceFormat.PDF,
+            observations=observations,
+            units_attempted=len(pages),
+            units_completed=0,
+            unit_outcomes=[
+                ExtractionUnitOutcome(
+                    unit_key=error.unit_key or f"page:{index}",
+                    status=ExtractionUnitStatus.FAILED_PERMANENT,
+                    provider=error.provider,
+                    error_code=error.code,
+                    message=error.message,
+                )
+                for index, error in enumerate(errors, start=1)
+            ],
+            errors=errors,
+        )
 
     # Prepare per-page bytes sequentially (pypdf is not thread-safe), then run
     # the vision round-trips concurrently — a multi-page PDF is otherwise N
@@ -513,51 +652,114 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
         try:
             page_payloads.append((page_number, _single_page_pdf_bytes(page)))
         except Exception:
-            errors.append(
-                ExtractionError(
-                    code="SOURCE_PAGE_READ_ERROR",
-                    message="PDF page could not be prepared for vision extraction",
+            error = ExtractionError(
+                code="SOURCE_PAGE_READ_ERROR",
+                message="PDF page could not be prepared for vision extraction",
+                unit_key=f"page:{page_number}",
+                provider="pypdf",
+            )
+            errors.append(error)
+            unit_outcomes.append(
+                ExtractionUnitOutcome(
                     unit_key=f"page:{page_number}",
+                    status=ExtractionUnitStatus.FAILED_PERMANENT,
                     provider="pypdf",
+                    error_code=error.code,
+                    message=error.message,
                 )
             )
 
     def _extract_page(page_number: int, page_bytes: bytes):
         page_key = f"page:{page_number}"
-        try:
-            response = _call_gemini_vision(page_bytes, media_type="application/pdf")
-            page_observations, page_outcome = _vision_observations(
-                response,
-                extraction_method=ExtractionMethod.MODEL_VISION,
-                unit_key=page_key,
-                page_number=page_number,
-            )
-            return page_number, page_observations, page_outcome, None
-        except _VisionExtractionFailure as exc:
-            return page_number, [], None, ExtractionError(
-                code=exc.code, message=exc.public_message, unit_key=page_key, provider="google", retryable=exc.retryable
-            )
-        except Exception:
-            return page_number, [], None, ExtractionError(
-                code="SOURCE_PAGE_READ_ERROR",
-                message="PDF page could not be prepared for vision extraction",
-                unit_key=page_key,
-                provider="pypdf",
-            )
+        attempt_count = 0
+        while True:
+            attempt_count += 1
+            try:
+                response = _call_gemini_vision(page_bytes, media_type="application/pdf")
+                page_observations, page_outcome = _vision_observations(
+                    response,
+                    extraction_method=ExtractionMethod.MODEL_VISION,
+                    unit_key=page_key,
+                    page_number=page_number,
+                )
+                return (
+                    page_number,
+                    page_observations,
+                    page_outcome,
+                    None,
+                    attempt_count,
+                )
+            except _VisionExtractionFailure as exc:
+                if exc.retryable and attempt_count <= _VISION_UNIT_RETRIES:
+                    continue
+                return page_number, [], None, ExtractionError(
+                    code=exc.code,
+                    message=exc.public_message,
+                    unit_key=page_key,
+                    provider="google",
+                    retryable=exc.retryable,
+                ), attempt_count
+            except Exception:
+                return page_number, [], None, ExtractionError(
+                    code="SOURCE_PAGE_READ_ERROR",
+                    message="PDF page could not be prepared for vision extraction",
+                    unit_key=page_key,
+                    provider="pypdf",
+                ), attempt_count
 
     workers = min(len(page_payloads), _VISION_CONCURRENCY) or 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
         page_results = list(pool.map(lambda payload: _extract_page(*payload), page_payloads))
 
     # Assemble in page order so observation identity/ordering stays deterministic.
-    for page_number, page_observations, page_outcome, error in sorted(page_results, key=lambda item: item[0]):
+    for page_number, page_observations, page_outcome, error, attempt_count in sorted(
+        page_results,
+        key=lambda item: item[0],
+    ):
         if error is not None:
             errors.append(error)
+            unit_outcomes.append(
+                ExtractionUnitOutcome(
+                    unit_key=error.unit_key or f"page:{page_number}",
+                    status=(
+                        ExtractionUnitStatus.FAILED_RETRYABLE
+                        if error.retryable
+                        else ExtractionUnitStatus.FAILED_PERMANENT
+                    ),
+                    provider=error.provider,
+                    attempt_count=attempt_count,
+                    error_code=error.code,
+                    message=error.message,
+                )
+            )
             continue
         completed += 1
         if page_outcome == "no_catalogue_evidence":
             warnings.append(f"page {page_number}: provider classified page as containing no catalogue evidence")
             empty_units += 1
+            unit_outcomes.append(
+                ExtractionUnitOutcome(
+                    unit_key=f"page:{page_number}",
+                    status=ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE,
+                    provider="google",
+                    attempt_count=attempt_count,
+                )
+            )
+        else:
+            unit_outcomes.append(
+                ExtractionUnitOutcome(
+                    unit_key=f"page:{page_number}",
+                    status=ExtractionUnitStatus.EVIDENCE_CAPTURED,
+                    observation_count=len(page_observations),
+                    provider="google",
+                    attempt_count=attempt_count,
+                    provider_request_id=(
+                        page_observations[0].provider_request_id
+                        if page_observations
+                        else None
+                    ),
+                )
+            )
         observations.extend(page_observations)
 
     return _build_result(
@@ -566,6 +768,7 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
         units_attempted=len(pages),
         units_completed=completed,
         empty_units=empty_units,
+        unit_outcomes=unit_outcomes,
         warnings=warnings,
         errors=errors,
     )
@@ -614,6 +817,21 @@ def _extract_image(
         units_attempted=1,
         units_completed=1,
         empty_units=empty_units,
+        unit_outcomes=[
+            ExtractionUnitOutcome(
+                unit_key="image:1",
+                status=(
+                    ExtractionUnitStatus.NO_CATALOGUE_EVIDENCE
+                    if page_outcome == "no_catalogue_evidence"
+                    else ExtractionUnitStatus.EVIDENCE_CAPTURED
+                ),
+                observation_count=len(observations),
+                provider="google",
+                provider_request_id=(
+                    observations[0].provider_request_id if observations else None
+                ),
+            )
+        ],
         warnings=warnings,
     )
 
@@ -737,7 +955,11 @@ def _call_gemini_vision(content: bytes, *, media_type: str) -> _VisionResponse:
         contents = [types.Part.from_bytes(data=content, mime_type=media_type), VISION_EVIDENCE_PROMPT]
 
         def _generate(cap_thinking: bool):
-            config_kwargs: dict[str, Any] = {"max_output_tokens": MAX_VISION_TOKENS}
+            config_kwargs: dict[str, Any] = {
+                "max_output_tokens": MAX_VISION_TOKENS,
+                "response_mime_type": "application/json",
+                "response_schema": _VisionEnvelope,
+            }
             if cap_thinking and VISION_THINKING_LEVEL:
                 config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=VISION_THINKING_LEVEL)
             return client.models.generate_content(
@@ -854,6 +1076,7 @@ def _build_result(
     units_attempted: int,
     units_completed: int,
     empty_units: int = 0,
+    unit_outcomes: list[ExtractionUnitOutcome] | None = None,
     warnings: list[str] | None = None,
     errors: list[ExtractionError] | None = None,
 ) -> ExtractionResult:
@@ -882,6 +1105,7 @@ def _build_result(
         units_attempted=units_attempted,
         units_completed=units_completed,
         empty_units=empty_units,
+        unit_outcomes=tuple(unit_outcomes or ()),
         warnings=tuple(warnings),
         errors=tuple(errors),
     )
@@ -897,12 +1121,29 @@ def _failed_result(
     retryable: bool = False,
     units_attempted: int = 0,
 ) -> ExtractionResult:
+    outcomes = ()
+    if units_attempted:
+        outcomes = tuple(
+            ExtractionUnitOutcome(
+                unit_key=unit_key or f"unit:{index}",
+                status=(
+                    ExtractionUnitStatus.FAILED_RETRYABLE
+                    if retryable
+                    else ExtractionUnitStatus.FAILED_PERMANENT
+                ),
+                provider=provider,
+                error_code=code,
+                message=message,
+            )
+            for index in range(1, units_attempted + 1)
+        )
     return ExtractionResult(
         status=ExtractionStatus.FAILED,
         source_format=source_format,
         observations=(),
         units_attempted=units_attempted,
         units_completed=0,
+        unit_outcomes=outcomes,
         errors=(
             ExtractionError(
                 code=code,
@@ -1174,5 +1415,7 @@ __all__ = [
     "ExtractionError",
     "ExtractionResult",
     "ExtractionStatus",
+    "ExtractionUnitOutcome",
+    "ExtractionUnitStatus",
     "extract_evidence",
 ]

@@ -25,6 +25,8 @@ This document fixes the vocabulary and ownership boundaries for the new
 
 ## Current delivery status
 
-Submission and Raw are the stable baseline. Later layers remain under active
-implementation. Read endpoints must not imply that incomplete downstream
-behavior is approved for publication.
+Submission and Raw are the stable baseline. Staging extraction records an
+append-only attempt plus a terminal outcome for every source unit. A partial
+attempt, a permanently failed unit, or a document with no catalogue evidence
+cannot proceed to Intermediate. Later interpretation/mastering behavior
+remains under active implementation.

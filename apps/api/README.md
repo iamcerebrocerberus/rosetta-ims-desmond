@@ -137,6 +137,15 @@ without a safe server default, startup stops with an actionable error rather
 than inventing a backfill. Structural or destructive changes require an
 explicit, reviewed migration outside application startup.
 
+### Catalogue extraction completeness
+
+Staging writes one append-only `catalogue_extraction_attempts` row per
+extraction invocation. Its `unit_outcomes_json` accounts for each PDF page,
+worksheet, CSV/text document, or image as evidence captured, explicitly empty,
+retryably failed, or permanently failed. Partial attempts never advance to
+Intermediate. PDF page calls retry independently; configure the bounded retry
+count with `CATALOGUE_VISION_UNIT_RETRIES` (default `2`).
+
 **To add a new column or table:**
 1. Update the SQLAlchemy model in `models.py` for current v1 runtime tables, or `apps/api/v2/models/` for additive v2 foundations
 2. For a nullable/defaulted additive field, `run_migrations()` will reconcile

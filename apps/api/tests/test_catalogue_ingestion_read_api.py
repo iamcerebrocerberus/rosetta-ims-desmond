@@ -90,6 +90,7 @@ def _reset(session):
     for model in (
         models.CatalogueSubmissionIdempotency,
         models.CatalogueRawStageAttempt,
+        models.CatalogueExtractionAttempt,
         models.CatalogueServingPublication,
         models.CatalogueSupplierMbbTerm,
         models.CatalogueSupplierPrice,
@@ -187,6 +188,11 @@ def test_staging_layer_returns_only_extracted_evidence(client, db, monkeypatch):
     body = client.get(f"/catalogues/ingestions/{run}/staging").json()
 
     assert body["layer"] == "staging"
+    assert len(body["extraction_attempts"]) == 1
+    attempt = body["extraction_attempts"][0]
+    assert attempt["status"] == "COMPLETE"
+    assert attempt["units_attempted"] == attempt["units_completed"] == 1
+    assert attempt["unit_outcomes"][0]["status"] == "EVIDENCE_CAPTURED"
     # Staging preserves what extraction observed; interpretation starts later.
     assert body["evidence_count"] == 1
     assert body["evidence"][0]["extraction_method"] == "MODEL_VISION"
