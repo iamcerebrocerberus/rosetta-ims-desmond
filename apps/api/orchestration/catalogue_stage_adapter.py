@@ -74,16 +74,22 @@ def normalized_row_command_from_conformance(item: ConformedRow) -> stages.BuildN
     """
 
     provenance = dict(item.provenance or {})
-    needs_review = provenance.get("interpreter") == "unconformable"
+    needs_review = provenance.get("interpreter") == "unconformable" or bool(item.issues)
+    blocking = any(issue.severity == "BLOCKING" for issue in item.issues)
     return stages.BuildNormalizedRowCommand(
         raw_observation_ids=(item.raw_observation_id,),
         raw_fields=item.raw_fields,
         normalized_fields=item.normalized_fields,
         idempotency_key=item.observation_key,
-        review_requirement=ReviewRequirement.REQUIRED if needs_review else None,
+        review_requirement=(
+            ReviewRequirement.BLOCKING
+            if blocking
+            else ReviewRequirement.REQUIRED if needs_review else None
+        ),
         metadata={
             "source_observation_key": item.observation_key,
             "conformance": provenance,
+            "contract_execution_issues": [issue.as_dict() for issue in item.issues],
         },
     )
 
