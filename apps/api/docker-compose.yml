@@ -66,6 +66,10 @@ services:
     env_file: .env
     environment:
       PREFECT_HOME: /prefect
+      # env_file leaks the api's WEB_CONCURRENCY into Prefect's embedded uvicorn;
+      # workers>1 with an in-process app makes uvicorn print "You must pass the
+      # application as an import string" and exit 0 -> silent restart loop.
+      WEB_CONCURRENCY: "1"
       PREFECT_API_URL: ""
       PREFECT_SERVER_API_HOST: 0.0.0.0
       PREFECT_UI_API_URL: ${PREFECT_UI_API_URL:-http://localhost:${PREFECT_UI_PORT:-4200}/api}
