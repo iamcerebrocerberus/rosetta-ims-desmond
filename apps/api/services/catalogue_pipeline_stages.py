@@ -362,15 +362,18 @@ class CatalogueValidationService(_TransactionalService):
             if existing is None:
                 persistence.persist_validation_issue(self.db, issue)
                 created += 1
+                current_issue = issue
             else:
+                existing_contract = persistence.validation_issue_to_contract(existing)
                 _assert_same_material(
-                    _issue_material(persistence.validation_issue_to_contract(existing)),
+                    _issue_material(existing_contract),
                     _issue_material(issue),
                     f"Validation Issue {issue.validation_issue_id}",
                 )
                 reused += 1
-            warning_count += 1 if issue.severity == IssueSeverity.WARNING else 0
-            blocking_count += 1 if issue.publish_blocking else 0
+                current_issue = existing_contract
+            warning_count += 1 if current_issue.severity == IssueSeverity.WARNING else 0
+            blocking_count += 1 if current_issue.publish_blocking else 0
             issue_ids.append(issue.validation_issue_id)
 
         if issue_specs:
@@ -1069,7 +1072,7 @@ def _assert_recorded_contract(label: str, contract_id: str | None, version: str 
 
 
 def _claim_issue_specs(staging: NormalizedRowV1) -> list[dict[str, Any]]:
-    specs: list[dict[str, Any]] = []
+    specs: list[dict[str, Any]] = _contract_execution_issue_specs(staging)
     if staging.raw_fields.cost and staging.normalized_fields.cost is None:
         specs.append(
             {
@@ -1114,6 +1117,82 @@ def _claim_issue_specs(staging: NormalizedRowV1) -> list[dict[str, Any]]:
                 }
             )
     return specs
+
+
+def _contract_execution_issue_specs(staging: NormalizedRowV1) -> list[dict[str, Any]]:
+    """Promote Phase 2/3 contract issues from claim metadata into durable issues."""
+
+    payload = staging.metadata.get("contract_execution_issues", [])
+    if not isinstance(payload, list):
+        return [_invalid_contract_issue_spec("contract_execution_issues must be a list")]
+
+    specs: list[dict[str, Any]] = []
+    for index, raw_issue in enumerate(payload):
+        if not isinstance(raw_issue, dict):
+            specs.append(_invalid_contract_issue_spec(f"entry {index} must be an object"))
+            continue
+        issue_code = raw_issue.get("issue_code")
+        message = raw_issue.get("message")
+        try:
+            severity = IssueSeverity(raw_issue.get("severity", IssueSeverity.WARNING.value))
+        except ValueError:
+            specs.append(_invalid_contract_issue_spec(f"entry {index} has an unsupported severity"))
+            continue
+        if not isinstance(issue_code, str) or not issue_code.strip():
+            specs.append(_invalid_contract_issue_spec(f"entry {index} has no issue_code"))
+            continue
+        if not isinstance(message, str) or not message.strip():
+            specs.append(_invalid_contract_issue_spec(f"entry {index} has no business-readable message"))
+            continue
+
+        field_key = raw_issue.get("field_key")
+        field_path, raw_value = _contract_issue_field_context(staging, field_key)
+        specs.append(
+            {
+                "stage": ValidationStage.STAGING,
+                "issue_code": issue_code.strip(),
+                "severity": severity,
+                "message": message.strip(),
+                "field_path": field_path,
+                "raw_value": raw_value,
+                "expected_value": "The supplier-contract requirement must be satisfied or explicitly reviewed.",
+                "review_guidance": "Compare the interpreted claim with its linked source evidence and record a decision.",
+            }
+        )
+    return specs
+
+
+def _invalid_contract_issue_spec(detail: str) -> dict[str, Any]:
+    return {
+        "stage": ValidationStage.STAGING,
+        "issue_code": "CONTRACT_ISSUE_METADATA_INVALID",
+        "severity": IssueSeverity.BLOCKING,
+        "message": f"A contract execution issue could not be persisted safely: {detail}.",
+        "field_path": "/metadata/contract_execution_issues",
+        "expected_value": "A list of typed, business-readable contract execution issues.",
+        "review_guidance": "Escalate this ingestion for technical review before approving the interpreted claim.",
+    }
+
+
+def _contract_issue_field_context(staging: NormalizedRowV1, field_key: Any) -> tuple[str, Any]:
+    if not isinstance(field_key, str) or not field_key.strip():
+        return "/metadata/contract_execution_issues", None
+    key = field_key.strip()
+    normalized_paths = {
+        "cost": "/normalized_fields/cost",
+        "rrp": "/normalized_fields/rrp",
+        "pack_size": "/normalized_fields/packaging",
+        "packaging": "/normalized_fields/packaging",
+        "effective_date": "/normalized_fields/effective_date",
+        "mbb_text": "/normalized_fields/mbb_terms",
+    }
+    raw_payload = staging.raw_fields.model_dump(mode="json")
+    if key in raw_payload:
+        return normalized_paths.get(key, f"/raw_fields/{key}"), raw_payload.get(key)
+    additional = raw_payload.get("additional_fields") or {}
+    if key in additional:
+        return normalized_paths.get(key, f"/raw_fields/additional_fields/{key}"), additional.get(key)
+    return f"/metadata/contract_execution_issues/{key}", None
 
 
 def _review_requirement(
@@ -1548,6 +1627,14 @@ def _scrub_evidence_confidence(value: Any) -> Any:
 def _issue_material(contract: ValidationIssueV1) -> dict[str, Any]:
     payload = contract.model_dump(mode="json")
     payload.pop("created_at", None)
+    for key in (
+        "resolution_status",
+        "resolver_id",
+        "resolved_at",
+        "resolution_note",
+        "publish_blocking",
+    ):
+        payload.pop(key, None)
     return payload
 
 

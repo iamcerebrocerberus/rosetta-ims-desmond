@@ -600,11 +600,14 @@ def test_flow_records_blocking_validation_and_skips_candidate(db, monkeypatch):
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
     assert flow_result.terminal_status == "completed_with_warnings"
-    assert flow_result.validation_issues_created == 1
+    assert flow_result.validation_issues_created == 2
     assert flow_result.mastering_candidates_created == 0
-    issue = db.query(models.CatalogueValidationIssue).one()
-    assert issue.issue_code == "STAGING_COST_BASIS_UNRESOLVED"
-    assert issue.publish_blocking == 1
+    issues = db.query(models.CatalogueValidationIssue).all()
+    assert {issue.issue_code for issue in issues} == {
+        "CONTRACT_NULL_COST_REQUIRES_REVIEW",
+        "STAGING_COST_BASIS_UNRESOLVED",
+    }
+    assert next(issue for issue in issues if issue.issue_code == "STAGING_COST_BASIS_UNRESOLVED").publish_blocking == 1
 
 
 def test_flow_failure_is_sanitized_and_durable(db, monkeypatch):
