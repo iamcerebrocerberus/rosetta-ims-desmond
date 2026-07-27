@@ -593,6 +593,45 @@ def test_unmatched_canonical_product_cannot_be_approved_or_applied(db):
     assert db.query(models.CataloguePackagingConfiguration).count() == 0
 
 
+def test_candidate_supplier_identity_cannot_cross_source_catalogues(db):
+    _seed_context(db)
+    _seed_product(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    candidate_id = stages.MasteringService(db).prepare_candidate(
+        stages.PrepareMasteringCandidateCommand(
+            catalogue_item_id=staging_id,
+            idempotency_key="cross-supplier-candidate",
+            supplier_product_resolution={
+                "state": "PROPOSED_CREATE",
+                "supplier_id": 999,
+                "supplier_product_id": "supplier:999:offer:10447",
+                "supplier_sku": "10447",
+            },
+            product_variant_resolution={
+                "state": "PROPOSED_MATCH",
+                "canonical_sku": "STAGE-SKU-10447",
+                "product_variant_id": "STAGE-SKU-10447",
+                "product_variant_name": "Hill's Healthy Cuisine Chicken 2.9 oz",
+            },
+        )
+    ).output_ids[0]
+
+    with pytest.raises(stages.SupplierContractMismatch, match="source catalogue"):
+        stages.ReviewDecisionService(db).record_decision(
+            stages.RecordReviewDecisionCommand(
+                mastering_candidate_id=candidate_id,
+                actor_id="reviewer@example.com",
+                review_status=ReviewStatus.APPROVED,
+                reason="Cross-supplier resolution must fail.",
+                idempotency_key="cross-supplier-approval",
+            )
+        )
+
+    assert db.query(models.CatalogueReviewDecision).count() == 0
+    assert db.query(models.CatalogueSupplierProduct).count() == 0
+
+
 def test_review_rejects_stale_candidate_revision_and_staging_key_conflicts(db):
     _seed_context(db)
     raw_id = _capture_raw(db)
