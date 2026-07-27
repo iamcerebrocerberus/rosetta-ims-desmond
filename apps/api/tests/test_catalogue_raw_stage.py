@@ -249,6 +249,27 @@ def test_raw_stage_rejects_password_protected_pdf(db, forbid_understanding):
     assert _source_row(db, submitted.ingestion_run_id).raw_stage_status == "failed"
 
 
+def test_raw_stage_accepts_owner_locked_pdf_with_empty_user_password(db, forbid_understanding):
+    # Supplier price lists are frequently distributed owner-locked (copy/print
+    # restrictions) with an EMPTY user password — any viewer opens them. The
+    # raw stage must treat those as readable sources, not password-protected.
+    writer = pypdf.PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt(user_password="", owner_password="restrictions-only")
+    output = BytesIO()
+    writer.write(output)
+    submitted = _submit(db, output.getvalue())
+
+    result = complete_raw_stage(db, ingestion_run_id=submitted.ingestion_run_id)
+
+    assert result.status == "completed"
+    db.expire_all()
+    source = _source_row(db, submitted.ingestion_run_id)
+    assert source.raw_stage_status == "completed"
+    assert source.page_count == 2
+
+
 def test_raw_stage_rejects_corrupt_pdf_structure(db, forbid_understanding):
     submitted = _submit(db, _text_pdf_bytes(["row one"]))
     corrupt = b"%PDF-1.4\nnot actually a readable pdf"

@@ -613,6 +613,15 @@ def _extract_text(content: bytes, *, source_format: SourceFormat) -> ExtractionR
 def _extract_pdf(content: bytes) -> ExtractionResult:
     try:
         reader = pypdf.PdfReader(io.BytesIO(content))
+        # Owner-locked PDFs (empty user password) already passed the raw stage;
+        # decrypt explicitly rather than relying on pypdf's lazy empty-password
+        # fallback during page access.
+        if reader.is_encrypted and not reader.decrypt(""):
+            return _failed_result(
+                SourceFormat.PDF,
+                code="MALFORMED_PDF",
+                message="PDF source is password protected",
+            )
     except Exception:
         return _failed_result(
             SourceFormat.PDF,
@@ -911,7 +920,9 @@ def _vision_observations(
         raise _VisionExtractionFailure(
             code="MALFORMED_PROVIDER_RESPONSE",
             public_message="Vision provider returned an invalid evidence envelope",
-            retryable=False,
+            # Model nondeterminism: a fresh generation usually produces a valid
+            # envelope, so give the page its in-attempt unit retries.
+            retryable=True,
         ) from exc
 
     if envelope.page_outcome == "no_catalogue_evidence":
@@ -947,7 +958,7 @@ def _vision_observations(
         raise _VisionExtractionFailure(
             code="MALFORMED_PROVIDER_RESPONSE",
             public_message="Vision provider returned invalid source evidence",
-            retryable=False,
+            retryable=True,
         ) from exc
     return observations, "evidence"
 
@@ -981,10 +992,16 @@ def _call_gemini_vision(content: bytes, *, media_type: str) -> _VisionResponse:
         contents = [types.Part.from_bytes(data=content, mime_type=media_type), VISION_EVIDENCE_PROMPT]
 
         def _generate(cap_thinking: bool):
+            # Native JSON mode (response_mime_type) forces syntactically valid
+            # JSON — the observed failure mode (fences/truncation garbage).
+            # Deliberately NO response_schema: google-genai 2.8 rejects the
+            # contract envelope's JSON schema client-side (exclusiveMinimum
+            # from gt=0) and the API rejects additionalProperties, so schema
+            # enforcement stays with _VisionEnvelope.model_validate after the
+            # call — which is the authoritative gate either way.
             config_kwargs: dict[str, Any] = {
                 "max_output_tokens": MAX_VISION_TOKENS,
                 "response_mime_type": "application/json",
-                "response_schema": _VisionEnvelope,
             }
             if cap_thinking and VISION_THINKING_LEVEL:
                 config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=VISION_THINKING_LEVEL)
@@ -1009,7 +1026,7 @@ def _call_gemini_vision(content: bytes, *, media_type: str) -> _VisionResponse:
             raise _VisionExtractionFailure(
                 code="MALFORMED_PROVIDER_RESPONSE",
                 public_message="Vision provider returned no text response",
-                retryable=False,
+                retryable=True,
             )
         return _VisionResponse(text=text, request_id=getattr(response, "response_id", None))
     except _VisionExtractionFailure:
@@ -1089,7 +1106,18 @@ def _strict_json_object(raw: str) -> dict[str, Any]:
     stripped = raw.strip()
     stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
     stripped = re.sub(r"\s*```$", "", stripped)
-    value = json.loads(stripped, parse_float=Decimal)
+    # Live JSON-mode responses occasionally append a stray closing brace or
+    # bracket after an otherwise complete envelope (observed on real supplier
+    # pages). Parse the FIRST JSON object and tolerate ONLY structural debris
+    # (whitespace/brackets/braces) after it — any real trailing content still
+    # fails, and the envelope's semantic validation runs unchanged after this.
+    try:
+        value = json.loads(stripped, parse_float=Decimal)
+    except json.JSONDecodeError:
+        value, end = json.JSONDecoder(parse_float=Decimal).raw_decode(stripped)
+        remainder = stripped[end:].strip()
+        if remainder and not re.fullmatch(r"[\s\]\}]*", remainder):
+            raise
     if not isinstance(value, dict):
         raise ValueError("provider response must be one JSON object")
     return value

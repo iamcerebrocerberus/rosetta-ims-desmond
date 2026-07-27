@@ -765,3 +765,18 @@ def test_csv_cells_carry_column_name_from_header_row():
         ("Description", "Healthy Cuisine 82g"),
         ("Wholesale", "HK$13.10"),
     ]
+
+
+def test_strict_json_object_recovers_trailing_structural_debris():
+    """Live JSON-mode responses occasionally append a stray closing brace after
+    a complete envelope (observed on real Alfamedic pages). Structural debris is
+    tolerated; real trailing content still fails."""
+    from services.catalogue_evidence_extraction import _strict_json_object
+
+    import pytest
+
+    payload = _strict_json_object('{"page_outcome": "no_catalogue_evidence", "observations": []}\n}')
+    assert payload["page_outcome"] == "no_catalogue_evidence"
+
+    with pytest.raises(Exception):
+        _strict_json_object('{"page_outcome": "evidence", "observations": []} {"second": "object"}')

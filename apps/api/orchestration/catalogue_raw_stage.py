@@ -135,7 +135,15 @@ def _structural_page_count(content: bytes, source_format: str) -> int | None:
     try:
         reader = pypdf.PdfReader(io.BytesIO(content))
         if reader.is_encrypted:
-            raise SourceVerificationError("Source PDF is password protected")
+            # Supplier PDFs are frequently owner-locked (copy/print restrictions)
+            # with an EMPTY user password — any viewer opens them. Those are
+            # readable sources; only a real user password is a rejection.
+            try:
+                decrypted = reader.decrypt("")
+            except Exception:
+                decrypted = 0
+            if not decrypted:
+                raise SourceVerificationError("Source PDF is password protected")
         return len(reader.pages)
     except SourceVerificationError:
         raise
