@@ -207,8 +207,7 @@ serving reads in this task.
 
 ## Deferred Work
 
-- HITL API/UI for review decisions and validation issue resolution.
-- Review-decision orchestration after human action.
+- HITL UI integration for the run-scoped validation, review, apply, and publish APIs.
 - Runtime adapter expansion for future supported supplier extraction outputs.
 - Public read cutover from legacy inventory views to `ServingItemV1`
   publications.
