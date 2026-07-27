@@ -70,7 +70,11 @@ def catalogue_ingestion_flow(*, ingestion_run_id: UUID) -> CatalogueFlowResult:
         raw_ids, raw_created, raw_reused = capture_extracted_evidence_task(raw.run_identity, evidence.observations)
         conformance = normalize_evidence_task(raw_ids, runtime_contract)
         staging_ids, staging_created, staging_reused = build_normalized_rows_task(conformance)
-        validation_created, validation_reused, blocking_count = evaluate_normalized_rows_task(staging_ids)
+        validation_created, validation_reused, blocking_count = evaluate_normalized_rows_task(
+            run_id,
+            staging_ids,
+            tuple(conformance.metadata.get("known_ambiguity_issues", ())),
+        )
         candidate_created, candidate_reused, candidate_warnings = prepare_eligible_candidates_task(
             raw.run_identity,
             staging_ids,

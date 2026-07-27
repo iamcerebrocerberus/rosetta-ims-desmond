@@ -406,6 +406,12 @@ def test_candidate_correction_supersedes_and_publishes_the_corrected_identity(cl
         json={"review_status": "APPROVED"},
     )
     assert superseded_review.status_code == 409
+
+    # Candidate detail exposes the full contract plus its decision history.
+    detail = client.get(f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}").json()
+    assert detail["candidate"]["superseded_by"] == revision_id
+    assert [d["decision_type"] for d in detail["decisions"]] == ["mastering_correction"]
+    assert detail["decisions"][0]["reason"] == "Matched to the existing Rosetta product by the reviewer."
     intermediate = client.get(f"/catalogues/ingestions/{run}/intermediate").json()
     by_id = {c["mastering_candidate_id"]: c for c in intermediate["mastering_candidates"]}
     assert by_id[candidate_id]["superseded_by"] == revision_id

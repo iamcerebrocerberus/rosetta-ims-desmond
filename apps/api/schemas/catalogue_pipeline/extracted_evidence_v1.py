@@ -83,6 +83,10 @@ class RawCell(ContractModel):
     column_name: str | None = Field(None, description="Source column/header label.")
     column_index: int | None = Field(None, gt=0, description="1-based source column index.")
     raw_value: Any = Field(..., description="Raw cell value as extracted from the source.")
+    formula: str | None = Field(
+        None,
+        description="Workbook formula when the cell is computed; raw_value then carries the cached displayed value when the workbook stored one.",
+    )
 
 
 class ExtractedEvidenceV1(ContractModel):

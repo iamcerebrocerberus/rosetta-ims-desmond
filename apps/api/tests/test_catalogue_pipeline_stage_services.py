@@ -777,6 +777,61 @@ def test_ambiguous_supplier_identity_is_reviewable_not_fatal(db):
         )
 
 
+def test_resolver_matches_by_barcode_when_supplier_sku_is_unmapped(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    product = _seed_product(db)
+    # Mapping carries a DIFFERENT supplier SKU but the same barcode — the
+    # resolver must match through the barcode path.
+    _seed_supplier_mapping(db, product, key="supplier:14:offer:barcode-route", sku="LEGACY-SKU", barcode="052742104470")
+
+    _, contract = _default_candidate(db, staging_id)
+
+    assert contract.supplier_product_resolution.state.value == "PROPOSED_MATCH"
+    assert contract.supplier_product_resolution.supplier_product_id == "supplier:14:offer:barcode-route"
+    assert contract.product_variant_resolution.state.value == "PROPOSED_MATCH"
+    assert contract.product_variant_resolution.canonical_sku == "STAGE-SKU-10447"
+
+
+def test_contract_ambiguities_are_one_run_scoped_issue_each_and_replay_safe(db):
+    _seed_context(db)
+    ambiguities = (
+        {
+            "issue_code": "HILLS_SUPPLIER_CODE_NOT_IN_SEED",
+            "severity": "WARNING",
+            "message": "The supplier code is not seeded in this checkout.",
+            "review_guidance": "Confirm the supplier master code.",
+        },
+    )
+    service = stages.CatalogueValidationService(db)
+    first = service.record_run_ambiguities(ingestion_run_id=RUN_ID, ambiguities=ambiguities)
+    assert (first.metrics.created_count, first.metrics.reused_count) == (1, 0)
+
+    issue = db.query(models.CatalogueValidationIssue).filter_by(
+        ingestion_run_uuid=str(RUN_ID), issue_code="HILLS_SUPPLIER_CODE_NOT_IN_SEED"
+    ).one()
+    assert issue.catalogue_item_uuid is None  # run-scoped, not per-row
+    assert issue.severity == "WARNING"
+    assert issue.publish_blocking == 0
+
+    # Resolve it, then replay: the resolution survives and nothing is duplicated.
+    service.resolve_issue(
+        stages.ResolveValidationIssueCommand(
+            validation_issue_id=UUID(issue.validation_issue_uuid),
+            resolution_status=IssueResolutionStatus.CONFIRMED,
+            resolver_id="reviewer@example.com",
+        )
+    )
+    replay = service.record_run_ambiguities(ingestion_run_id=RUN_ID, ambiguities=ambiguities)
+    assert (replay.metrics.created_count, replay.metrics.reused_count) == (0, 1)
+    db.expire_all()
+    refreshed = db.query(models.CatalogueValidationIssue).filter_by(
+        ingestion_run_uuid=str(RUN_ID), issue_code="HILLS_SUPPLIER_CODE_NOT_IN_SEED"
+    ).one()
+    assert refreshed.resolution_status == "CONFIRMED"
+
+
 def test_correction_supersedes_candidate_and_only_the_revision_is_decidable(db):
     _seed_context(db)
     raw_id = _capture_raw(db)

@@ -152,7 +152,9 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert flow_result.rows_extracted == 2
     assert flow_result.raw_observations_created == 2
     assert flow_result.staging_items_created == 2
-    assert flow_result.validation_issues_created == 4
+    # 4 row-derived issues + the Hill's contract's declared format ambiguity
+    # recorded once as a run-scoped review issue.
+    assert flow_result.validation_issues_created == 5
     assert flow_result.mastering_candidates_created == 1
     assert flow_result.human_review_required is True
 
@@ -202,7 +204,12 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
         "CONTRACT_REQUIRED_FIELD_MISSING",
         "CONTRACT_COST_UNPARSEABLE",
         "STAGING_COST_BASIS_UNRESOLVED",
+        # The Hill's contract's declared format ambiguity, once per run.
+        "HILLS_SUPPLIER_CODE_NOT_IN_SEED",
     }
+    ambiguity = next(item for item in issues if item.issue_code == "HILLS_SUPPLIER_CODE_NOT_IN_SEED")
+    assert ambiguity.catalogue_item_uuid is None  # run-scoped, not per-row
+    assert ambiguity.publish_blocking == 0
     assert len([item for item in issues if item.issue_code == "CONTRACT_REQUIRED_FIELD_MISSING"]) == 2
     issue = next(item for item in issues if item.issue_code == "STAGING_COST_BASIS_UNRESOLVED")
     issue_contract = persistence.validation_issue_to_contract(issue)

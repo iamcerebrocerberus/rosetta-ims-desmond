@@ -554,19 +554,27 @@ def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch)
 
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
-    assert flow_result.terminal_status == "completed"
+    # The Hill's contract DECLARES one standing format ambiguity, which becomes
+    # one run-scoped review issue — so even a clean row set completes WITH
+    # warnings until that ambiguity is reviewed.
+    assert flow_result.terminal_status == "completed_with_warnings"
     assert flow_result.rows_extracted == 1
     assert flow_result.raw_observations_created == 1
     assert flow_result.staging_items_created == 1
+    assert flow_result.validation_issues_created == 1
     assert flow_result.mastering_candidates_created == 1
     assert flow_result.human_review_required is True
 
     run = db.query(models.IngestionRun).one()
-    assert run.status == "completed"
+    assert run.status == "completed_with_warnings"
     assert run.started_at is not None
     assert run.completed_at is not None
     assert db.query(models.CatalogueExtractedEvidence).count() == 1
     assert db.query(models.CatalogueNormalizedRow).count() == 1
+    ambiguity = db.query(models.CatalogueValidationIssue).one()
+    assert ambiguity.issue_code == "HILLS_SUPPLIER_CODE_NOT_IN_SEED"
+    assert ambiguity.catalogue_item_uuid is None  # run-scoped, not per-row
+    assert ambiguity.publish_blocking == 0
     candidate = db.query(models.CatalogueMasteringCandidate).one()
     assert candidate.review_status == "PENDING_REVIEW"
     assert db.query(models.CatalogueReviewDecision).count() == 0
@@ -574,8 +582,9 @@ def test_flow_runs_machine_pipeline_and_stops_at_pending_review(db, monkeypatch)
     assert db.query(models.CatalogueServingPublication).count() == 0
 
     replay = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
-    assert replay.terminal_status == "completed"
+    assert replay.terminal_status == "completed_with_warnings"
     assert db.query(models.CatalogueExtractedEvidence).count() == 1
+    assert db.query(models.CatalogueValidationIssue).count() == 1  # no duplicate on replay
 
 
 def test_flow_records_blocking_validation_and_skips_candidate(db, monkeypatch):
@@ -600,12 +609,14 @@ def test_flow_records_blocking_validation_and_skips_candidate(db, monkeypatch):
     flow_result = catalogue_ingestion_flow(ingestion_run_id=result.ingestion_run_id)
 
     assert flow_result.terminal_status == "completed_with_warnings"
-    assert flow_result.validation_issues_created == 2
+    assert flow_result.validation_issues_created == 3
     assert flow_result.mastering_candidates_created == 0
     issues = db.query(models.CatalogueValidationIssue).all()
     assert {issue.issue_code for issue in issues} == {
         "CONTRACT_NULL_COST_REQUIRES_REVIEW",
         "STAGING_COST_BASIS_UNRESOLVED",
+        # Alfamedic's declared format ambiguity, recorded once per run.
+        "ALFAMEDIC_MBB_TIER_BASIS_UNVERIFIED",
     }
     assert next(issue for issue in issues if issue.issue_code == "STAGING_COST_BASIS_UNRESOLVED").publish_blocking == 1
 

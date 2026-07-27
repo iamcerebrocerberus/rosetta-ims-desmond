@@ -63,7 +63,13 @@ def test_spreadsheet_preserves_all_sheets_rows_cells_formulas_and_duplicates():
     ]
     assert result.observations[1].source_location.cell_range == "A2:C2"
     assert result.observations[1].raw_cells[2].cell_reference == "C2"
+    # Formula cells preserve the formula; raw_value carries the workbook's
+    # cached displayed value when one exists. This in-memory workbook was never
+    # opened by a spreadsheet app, so there is no cache and raw_value falls
+    # back to the formula string.
+    assert result.observations[1].raw_cells[2].formula == "=10+3.1"
     assert result.observations[1].raw_cells[2].raw_value == "=10+3.1"
+    assert result.observations[1].raw_cells[0].formula is None
     assert [cell.raw_value for cell in result.observations[2].raw_cells] == [
         cell.raw_value for cell in result.observations[1].raw_cells
     ]

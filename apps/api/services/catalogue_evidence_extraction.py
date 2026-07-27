@@ -345,6 +345,23 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
             code="MALFORMED_SPREADSHEET",
             message="Spreadsheet source could not be read",
         )
+    # Second read with data_only=True: for formula cells the workbook's CACHED
+    # displayed value (what the supplier saw) becomes raw_value, with the
+    # formula preserved verbatim on the cell. A workbook never opened by a
+    # spreadsheet app has no cache — raw_value then stays the formula string.
+    cached_values: dict[tuple[str, str], Any] = {}
+    try:
+        cached_workbook = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        try:
+            for cached_sheet in cached_workbook.worksheets:
+                for cached_row in cached_sheet.iter_rows():
+                    for cached_cell in cached_row:
+                        if cached_cell.value is not None:
+                            cached_values[(cached_sheet.title, cached_cell.coordinate)] = cached_cell.value
+        finally:
+            cached_workbook.close()
+    except Exception:
+        cached_values = {}
 
     observations: list[ExtractedEvidence] = []
     warnings: list[str] = []
@@ -378,7 +395,12 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
                             row_number=cell.row,
                             column_index=cell.column,
                             column_name=header.get(cell.column),
-                            raw_value=cell.value,
+                            raw_value=(
+                                cached_values.get((sheet.title, cell.coordinate), cell.value)
+                                if _is_formula_value(cell.value)
+                                else cell.value
+                            ),
+                            formula=cell.value if _is_formula_value(cell.value) else None,
                         )
                         for cell in row
                     )
@@ -450,6 +472,10 @@ def _extract_spreadsheet(content: bytes) -> ExtractionResult:
         warnings=warnings,
         errors=errors,
     )
+
+
+def _is_formula_value(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith("=")
 
 
 def _header_labels(rows: list[list[str]]) -> dict[int, str | None]:

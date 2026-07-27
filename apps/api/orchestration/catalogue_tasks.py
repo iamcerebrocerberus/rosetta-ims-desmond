@@ -210,11 +210,21 @@ def build_normalized_rows_task(
 
 
 @task(name="evaluate-normalized-rows", retries=0)
-def evaluate_normalized_rows_task(staging_ids: tuple[UUID, ...]) -> tuple[int, int, int]:
+def evaluate_normalized_rows_task(
+    run_id: str,
+    staging_ids: tuple[UUID, ...],
+    contract_ambiguities: tuple = (),
+) -> tuple[int, int, int]:
     db = database.SessionLocal()
     try:
         service = stages.CatalogueValidationService(db)
         created = reused = blocking = 0
+        ambiguity_result = service.record_run_ambiguities(
+            ingestion_run_id=UUID(run_id),
+            ambiguities=tuple(contract_ambiguities),
+        )
+        created += ambiguity_result.metrics.created_count
+        reused += ambiguity_result.metrics.reused_count
         for staging_id in staging_ids:
             result = service.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
             created += result.metrics.created_count

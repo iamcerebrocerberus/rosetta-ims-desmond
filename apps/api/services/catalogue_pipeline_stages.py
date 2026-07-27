@@ -372,6 +372,64 @@ class ExtractedEvidenceService(_TransactionalService):
 class CatalogueValidationService(_TransactionalService):
     """Persist durable validation issues for cross-record and domain rules."""
 
+    def record_run_ambiguities(
+        self,
+        *,
+        ingestion_run_id: UUID,
+        ambiguities: tuple[dict[str, Any], ...],
+        recorded_at: datetime | None = None,
+    ) -> StageResult:
+        """Persist each declared contract ambiguity as ONE run-scoped review issue.
+
+        Known ambiguities are per-FORMAT conditions, not per-row findings — one
+        durable, resolvable issue per run keeps them reviewable without
+        flooding every row. Idempotent by (run, issue_code); replay never
+        rewrites an issue's resolution.
+        """
+
+        created = reused = 0
+        created_at = recorded_at or _now()
+        for ambiguity in ambiguities:
+            issue_code = str(ambiguity.get("issue_code") or "").strip()
+            message = str(ambiguity.get("message") or "").strip()
+            if not issue_code or not message:
+                continue
+            issue_id = _stable_uuid(
+                "validation-issue",
+                {"run": str(ingestion_run_id), "stage": ValidationStage.STAGING.value, "code": issue_code},
+            )
+            existing = persistence._validation_issue(self.db, issue_id)  # noqa: SLF001
+            if existing is not None:
+                reused += 1
+                continue
+            persistence.persist_validation_issue(
+                self.db,
+                ValidationIssueV1.model_validate(
+                    {
+                        "contract_version": "catalogue.validation_issue.v1",
+                        "validation_issue_id": str(issue_id),
+                        "ingestion_run_id": str(ingestion_run_id),
+                        "catalogue_item_id": None,
+                        "raw_observation_id": None,
+                        "stage": ValidationStage.STAGING.value,
+                        "issue_code": issue_code,
+                        "severity": IssueSeverity.WARNING.value,
+                        "message": message,
+                        "created_at": _iso(created_at),
+                        "resolution_status": IssueResolutionStatus.OPEN.value,
+                        "expected_value": "The declared source-format ambiguity must be reviewed for this run.",
+                        "review_guidance": ambiguity.get("review_guidance"),
+                    }
+                ),
+            )
+            created += 1
+        self._finish()
+        return StageResult(
+            stage="validation",
+            output_ids=(),
+            metrics=StageMetrics(input_count=len(ambiguities), created_count=created, reused_count=reused),
+        )
+
     def evaluate_claim(self, command: EvaluateNormalizedRowCommand) -> StageResult:
         staging_row = _normalized_row_row(self.db, command.catalogue_item_id)
         staging = persistence.normalized_row_to_contract(staging_row)

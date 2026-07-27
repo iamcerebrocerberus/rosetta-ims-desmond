@@ -113,6 +113,7 @@ def conform_observations(
                 continue
             row_issues = (
                 document_issues
+                + _row_eligibility_issues(fields, runtime_contract)
                 + _required_field_issues(fields, runtime_contract)
                 + _validation_rule_issues(fields, runtime_contract)
                 + _normalization_issues(fields, runtime_contract)
@@ -166,6 +167,17 @@ def conform_observations(
             "document_issues": [issue.as_dict() for issue in document_issues],
             "declared_row_eligibility_rules": list(runtime_contract.declaration.source_structure.row_eligibility_rules),
             "declared_skip_rules": list(runtime_contract.declaration.source_structure.skip_rules),
+            # Declared per-FORMAT ambiguities become ONE durable run-scoped review
+            # issue each (not one per row) — promoted by the validation stage.
+            "known_ambiguity_issues": [
+                {
+                    "issue_code": ambiguity.issue_code,
+                    "severity": "WARNING",
+                    "message": ambiguity.condition,
+                    "review_guidance": ambiguity.review_guidance,
+                }
+                for ambiguity in runtime_contract.declaration.known_ambiguities
+            ],
             "degraded": unconformable > 0 or bool(document_issues) or any(item.issues for item in items),
         },
         issues=document_issues,
@@ -431,25 +443,45 @@ def _normalization_issues(
     return tuple(issues)
 
 
+# One comparison per rule: `<field> <op> <field-or-number>`. Deliberately not a
+# general expression language — anything beyond this grammar is surfaced as
+# unsupported rather than guessed at.
+_RULE_EXPRESSION = re.compile(
+    r"^\s*([a-z_][a-z0-9_]*)\s*(<=|>=|==|!=|<|>)\s*([a-z_][a-z0-9_]*|-?\d+(?:\.\d+)?)\s*$"
+)
+_RULE_OPERATORS = {
+    "<": lambda left, right: left < right,
+    "<=": lambda left, right: left <= right,
+    ">": lambda left, right: left > right,
+    ">=": lambda left, right: left >= right,
+    "==": lambda left, right: left == right,
+    "!=": lambda left, right: left != right,
+}
+
+
+def _rule_operand(token: str, fields: dict[str, Any]) -> Decimal | None:
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", token):
+        return Decimal(token)
+    return _decimal_value(fields.get(token))
+
+
 def _validation_rule_issues(
     fields: dict[str, Any],
     runtime_contract,
 ) -> tuple[ContractExecutionIssue, ...]:
-    """Execute the small, declared v1 rule vocabulary without evaluating code."""
+    """Execute declared comparison rules deterministically; never evaluate code.
+
+    A rule fires only when BOTH operands are present and numeric — absent or
+    unparseable values are the province of the null-marker/required-field
+    checks, not silent rule failures.
+    """
 
     issues: list[ContractExecutionIssue] = []
     for rule in runtime_contract.declaration.validation_rules:
-        failed = False
-        cost = _decimal_value(fields.get("cost_price"))
-        rrp = _decimal_value(fields.get("rrp"))
-        increment = _decimal_value(fields.get("order_increment_qty"))
-        if rule.source_expression == "cost_price < rrp":
-            failed = cost is not None and rrp is not None and cost >= rrp
-        elif rule.source_expression == "cost_price > 0":
-            failed = cost is not None and cost <= 0
-        elif rule.source_expression == "order_increment_qty >= 1":
-            failed = increment is not None and increment < 1
-        elif rule.source_expression:
+        if not rule.source_expression:
+            continue
+        parsed = _RULE_EXPRESSION.match(rule.source_expression)
+        if parsed is None:
             issues.append(
                 ContractExecutionIssue(
                     issue_code="CONTRACT_VALIDATION_RULE_UNSUPPORTED",
@@ -459,6 +491,13 @@ def _validation_rule_issues(
                 )
             )
             continue
+        left = _rule_operand(parsed.group(1), fields)
+        right = _rule_operand(parsed.group(3), fields)
+        failed = (
+            left is not None
+            and right is not None
+            and not _RULE_OPERATORS[parsed.group(2)](left, right)
+        )
         if failed:
             issues.append(
                 ContractExecutionIssue(
@@ -469,6 +508,32 @@ def _validation_rule_issues(
                 )
             )
     return tuple(issues)
+
+
+def _row_eligibility_issues(
+    fields: dict[str, Any],
+    runtime_contract,
+) -> tuple[ContractExecutionIssue, ...]:
+    """Deterministic projection of the contract's prose eligibility rules.
+
+    The declared rules are business prose and cannot be executed literally;
+    what IS checkable is whether the row carried ANY source-mapped contract
+    field at all. A row that mapped nothing (constants aside) is very unlikely
+    to be a catalogue item — flag it against the declared rule for review.
+    """
+
+    rules = runtime_contract.declaration.source_structure.row_eligibility_rules
+    if not rules:
+        return ()
+    if any(_text(value) is not None for key, value in fields.items() if key.startswith("source:")):
+        return ()
+    return (
+        ContractExecutionIssue(
+            issue_code="CONTRACT_ROW_NOT_ELIGIBLE",
+            severity="WARNING",
+            message=f"Row mapped no contract source fields; declared eligibility: {rules[0]}",
+        ),
+    )
 
 
 def _required_field_issues(

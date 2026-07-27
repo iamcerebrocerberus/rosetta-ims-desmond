@@ -304,6 +304,43 @@ def review_catalogue_mastering_candidate(
     return _action_response(result)
 
 
+@router.get("/ingestions/{run_uuid}/mastering-candidates/{mastering_candidate_id}")
+def get_catalogue_mastering_candidate(
+    run_uuid: UUID,
+    mastering_candidate_id: UUID,
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_capability("catalogue_onboard")),
+) -> dict[str, Any]:
+    """One candidate in full, with its append-only review-decision history."""
+    _load_run_or_404(db, run_uuid)
+    row = _load_run_candidate_or_404(db, run_uuid, mastering_candidate_id)
+    decisions = (
+        db.query(models.CatalogueReviewDecision)
+        .filter_by(mastering_candidate_uuid=str(mastering_candidate_id))
+        .order_by(models.CatalogueReviewDecision.id)
+        .all()
+    )
+    return {
+        "ingestion_run_id": str(run_uuid),
+        "candidate": {
+            **persistence.mastering_candidate_to_contract(row).model_dump(mode="json"),
+            "superseded_by": row.superseded_by_uuid,
+        },
+        "decisions": [
+            {
+                "review_decision_id": decision.review_decision_uuid,
+                "decision_type": decision.decision_type,
+                "review_status": decision.review_status,
+                "actor_id": decision.actor_id,
+                "decided_at": decision.decided_at,
+                "reason": decision.reason,
+                "override_reason": decision.override_reason,
+            }
+            for decision in decisions
+        ],
+    }
+
+
 @router.post(
     "/ingestions/{run_uuid}/mastering-candidates/{mastering_candidate_id}/correct",
     response_model=PipelineActionResponse,
