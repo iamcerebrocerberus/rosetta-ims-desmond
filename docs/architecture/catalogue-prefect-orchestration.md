@@ -24,7 +24,7 @@ The implementation builds on the current persistence and service foundations:
 | Run lifecycle | `IngestionRun` supports `queued`, `running`, `completed`, `completed_with_warnings`, `failed` and `cancelled`; `started_at` is nullable for queued runs. | The lifecycle service atomically claims queued runs and writes truthful terminal state. |
 | Supplier-source contracts | `supplier_source_contract_runtime.resolve_supplier_contract` rejects unknown, ambiguous and unsupported contracts. | Orchestration resolves the exact recorded ID/version only. |
 | Stage services | `ExtractedEvidenceService`, `InterpretedClaimService`, `CatalogueValidationService` and `MasteringService` are framework-neutral. | Prefect tasks call these services without importing FastAPI or leaking ORM objects between tasks. |
-| v1 compatibility | `/v1/catalogues/import` still performs synchronous legacy extraction. | The Prefect path does not change v1 behavior. |
+| v1 import removed | `POST /catalogues/import` returns a 410 tombstone pointing at `/catalogues/ingestions`. | The queued Prefect path is the only upload flow. |
 
 ## Prefect Dependency
 
@@ -389,7 +389,7 @@ must point to the same `DATABASE_URL`.
 
 ## Existing Compatibility
 
-- `/v1/catalogues/import` remains synchronous and legacy-table based.
+- `POST /catalogues/import` is removed (410); the legacy review queue still serves previously imported items.
 - `/catalogues/ingestions` still returns after durable submission only.
 - The v2 status endpoint reads the run state written by orchestration.
 - Stage services stay framework-neutral.

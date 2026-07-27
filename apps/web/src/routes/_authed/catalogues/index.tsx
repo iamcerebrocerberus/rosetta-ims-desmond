@@ -1160,21 +1160,29 @@ function CataloguesPage() {
   async function uploadOne(bf: BatchFile) {
     const startedAt = Date.now()
     setBatchFiles(prev => prev.map(x => x.key === bf.key ? { ...x, status: 'uploading', error: null, startedAt } : x))
+    // v1 POST /catalogues/import (synchronous AI extraction) was removed. Files
+    // now enter the evidence-first queued pipeline, which REQUIRES a supplier
+    // identity to resolve the supplier-source contract.
+    if (bf.supplierId == null) {
+      setBatchFiles(prev => prev.map(x => x.key === bf.key
+        ? { ...x, status: 'error', error: 'Supplier required — assign a supplier before ingesting' }
+        : x))
+      return
+    }
     try {
       const fd = new FormData()
       fd.append('file', bf.file)
-      if (bf.supplierId != null) fd.append('supplier_id', String(bf.supplierId))
-      const res = await fetch(`${API}/catalogues/import`, { method: 'POST', body: fd, headers: authHeaders() })
+      fd.append('supplier_id', String(bf.supplierId))
+      const res = await fetch(`${API}/catalogues/ingestions`, { method: 'POST', body: fd, headers: authHeaders() })
       const data = await res.json().catch(() => ({}))
-      const sup = data.supplier ?? {}
       setBatchFiles(prev => prev.map(x => x.key === bf.key
         ? (res.ok
-            ? { ...x, status: 'done', itemCount: data.item_count ?? 0, importId: data.import_id ?? null,
-                fmt: data.format ?? null,
-                detectedSupplier: sup.detected_name ?? null,
-                detectedBrands: Array.isArray(sup.detected_brands) ? sup.detected_brands.join(', ') : (sup.detected_brands ?? null),
-                supplierStatus: sup.status ?? null }
-            : { ...x, status: 'error', error: data.detail ?? `HTTP ${res.status}` })
+            ? { ...x, status: 'done', itemCount: null, importId: null,
+                fmt: data.document_type ?? null,
+                detectedSupplier: null,
+                detectedBrands: null,
+                supplierStatus: data.contract_id ? `queued (${data.contract_id})` : 'queued' }
+            : { ...x, status: 'error', error: (typeof data.detail === 'string' ? data.detail : data.detail?.message) ?? `HTTP ${res.status}` })
         : x))
     } catch {
       setBatchFiles(prev => prev.map(x => x.key === bf.key ? { ...x, status: 'error', error: 'Network error' } : x))

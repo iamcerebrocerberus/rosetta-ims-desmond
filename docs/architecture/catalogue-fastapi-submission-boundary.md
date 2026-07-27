@@ -197,8 +197,8 @@ sequenceDiagram
 
 ## Compatibility and Deferred Work
 
-`/v1/catalogues/import` remains the synchronous compatibility path and still
-performs extraction/review staging in the legacy tables. The v2 submission route
+`POST /catalogues/import` was REMOVED (410 tombstone): the queued submission
+boundary is the only catalogue upload path. The v2 submission route
 does not call extraction services, stage services, `BackgroundTasks`, queues, or
 Prefect inline. Prefect orchestration can claim the queued run through the
 separate dispatcher/reconciler documented in

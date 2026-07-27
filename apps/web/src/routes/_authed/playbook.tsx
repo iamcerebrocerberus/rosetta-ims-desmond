@@ -778,7 +778,7 @@ function PlaybookPage() {
                     <p style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase' as const, letterSpacing: '0.08em', color: C.faint, marginBottom: '12px' }}>Key API endpoints</p>
                     <div style={{ background: 'white', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px 16px' }}>
                       <EndpointGrid>
-                        <EndpointRow method="POST" path="/catalogues/import" desc="Upload PDF/Excel/CSV -- AI extraction -- items land in review queue" />
+                        <EndpointRow method="POST" path="/catalogues/ingestions" desc="Upload PDF/Excel/CSV -- queued evidence-first pipeline (raw, staging, intermediate, serving)" />
                         <EndpointRow method="GET" path="/catalogues/{id}/items" desc="List extracted items for a catalogue, filterable by review_status" />
                         <EndpointRow method="GET" path="/catalogues/queue/pending" desc="Cross-catalogue pending queue, ordered by confidence score" />
                         <EndpointRow method="POST" path="/catalogues/items/{id}/match" desc="Confirm match to existing internal SKU" />

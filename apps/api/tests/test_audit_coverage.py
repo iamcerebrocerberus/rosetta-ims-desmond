@@ -25,6 +25,7 @@ ALLOWLIST = {
     "catalogues.py::match_confident",     # -> bulk_match (audits each item via log_event)
     "catalogues.py::reject_brand",        # -> bulk_reject (audits each item via log_event)
     "reparse.py::confirm_reparse",        # -> reparse_service.apply_change (audits each applied change)
+    "catalogues.py::import_catalogue_removed",  # static 410 tombstone for the removed v1 import; mutates nothing
 }
 
 _AUDIT_ATTRS = {"record", "log_event"}          # audit_log.record(...) / audit.log_event(...)

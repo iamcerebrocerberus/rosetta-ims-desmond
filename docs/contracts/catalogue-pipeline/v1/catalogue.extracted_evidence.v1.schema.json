@@ -160,6 +160,19 @@
           "description": "Source column/header label.",
           "title": "Column Name"
         },
+        "formula": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Workbook formula when the cell is computed; raw_value then carries the cached displayed value when the workbook stored one.",
+          "title": "Formula"
+        },
         "raw_value": {
           "description": "Raw cell value as extracted from the source.",
           "title": "Raw Value"

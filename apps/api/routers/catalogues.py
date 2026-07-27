@@ -1,7 +1,7 @@
 """
 Catalogue ingestion endpoints.
 
-POST /catalogues/import         Upload a catalogue file → AI extraction → review queue
+POST /catalogues/import         REMOVED → 410; use POST /catalogues/ingestions (queued pipeline)
 GET  /catalogues                List all catalogue imports
 GET  /catalogues/{id}           Import detail + item counts
 GET  /catalogues/{id}/items     Items extracted from a catalogue (filterable by review_status)
@@ -11,7 +11,7 @@ POST /catalogues/items/{id}/assign-new   Assign a new auto-generated SKU and cre
 POST /catalogues/items/{id}/reject       Reject (clinical consumable / not for retail)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, ORJSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -22,8 +22,7 @@ import os
 
 import models
 import database
-from services import extraction_service, supplier_resolver, audit, tagging_service, tag_service, audit_log
-from services import supplier_source_contract_runtime
+from services import extraction_service, audit, tagging_service, tag_service, audit_log
 from services.sku_service import next_sku, CATEGORY_PREFIX
 from dependencies import require_user
 from permissions import require_capability
@@ -34,22 +33,6 @@ NOW = lambda: datetime.utcnow().isoformat()
 
 _UPLOAD_DIR = os.environ.get("CATALOGUE_UPLOAD_DIR", "/data/catalogue_uploads")
 
-
-def _persist_upload(content: bytes, import_id: int, filename: str) -> Optional[str]:
-    """RP-1.2: best-effort save of the raw upload so a future re-parse can re-OCR from source. Returns
-    the storage path, or None on any failure — the import must still succeed if storage is unavailable."""
-    try:
-        os.makedirs(_UPLOAD_DIR, exist_ok=True)
-        ext = os.path.splitext(filename or "")[1][:12]
-        path = os.path.join(_UPLOAD_DIR, f"{import_id}{ext}")
-        with open(path, "wb") as fh:
-            fh.write(content)
-        return path
-    except Exception:
-        return None
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _item_to_dict(item: models.CatalogueItem) -> dict:
     detail = {}
@@ -138,175 +121,23 @@ def _import_to_dict(imp: models.CatalogueImport, db: Session) -> dict:
 
 # ── Import ────────────────────────────────────────────────────────────────────
 
-@router.post("/import")
-def import_catalogue(
-    request: Request,
-    file: UploadFile = File(...),
-    supplier_id: Optional[int] = Form(None),
-    db: Session = Depends(database.get_db),
-    _user: models.User = Depends(require_capability("catalogue_onboard")),
-):
-    # Sync `def` (not async) on purpose: extraction does blocking OCR/network work.
-    # Starlette runs sync endpoints in a threadpool, so a slow import no longer
-    # stalls the event loop — concurrent imports and other API calls stay responsive.
-    content = file.file.read()
-    filename = file.filename or "upload"
-    content_type = file.content_type or ""
+@router.post("/import", deprecated=True)
+def import_catalogue_removed():
+    """REMOVED (v1): synchronous AI import. Use POST /catalogues/ingestions.
 
-    # Select only supported Pydantic supplier-source contracts. Suppliers without a
-    # supported source contract follow generic extraction unchanged.
-    contract = supplier_source_contract_runtime.load_contract(supplier_id) if supplier_id else None
-    items_raw, fmt = extraction_service.extract(content, filename, content_type, contract=contract)
-    contract_flags, contract_stale = {}, False
-    if contract is not None:
-        items_raw, _flags = contract.apply(items_raw)
-        contract_flags = {f["index"]: f for f in _flags}
-        # Drift: most rows failing validation means the catalogue likely no longer
-        # matches the selected supplier-source contract.
-        contract_stale = bool(items_raw) and len(_flags) > 0.5 * len(items_raw)
-
-    # ── Stage 1: detect + resolve the supplier (per file). A user-picked supplier always wins. ──
-    detected = {"supplier": None, "brands": [], "confidence": 0.0}
-    sup_conf = None
-    resolver_out = None
-    if supplier_id:
-        sup_source, sup_status = "user", "confirmed"
-    else:
-        try:
-            detected = extraction_service.detect_supplier_brand(content, filename, content_type)
-            resolver_out = supplier_resolver.resolve(db, detected.get("supplier"), detected.get("brands"))
-        except Exception:
-            resolver_out = None
-        sup_source = "ai"
-        if resolver_out and resolver_out.get("resolved"):     # confident + unambiguous -> auto-set
-            supplier_id = resolver_out["resolved"]["supplier_id"]
-            sup_conf = resolver_out["resolved"]["confidence"]
-            sup_status = "confirmed"
-        else:                                                  # ambiguous / low / none -> human picks
-            bg = (resolver_out or {}).get("best_guess")
-            sup_conf = bg["confidence"] if bg else None
-            sup_status = "needs_review"
-
-    now = NOW()
-    catalogue = models.CatalogueImport(
-        supplier_id=supplier_id,
-        filename=filename,
-        format=fmt,
-        imported_at=now,
-        status='review',
-        item_count=len(items_raw),
-        detected_supplier_name=detected.get("supplier"),
-        detected_brands=",".join(detected.get("brands") or []) or None,
-        supplier_confidence=sup_conf,
-        supplier_source=sup_source,
-        supplier_status=sup_status,
-    )
-    db.add(catalogue)
-    db.flush()
-
-    # ── RP-1.2: persist the uploaded source (best-effort) so future re-parses can re-OCR from it.
-    #    A storage failure must never fail the import — the extracted items are what matter. ──
-    catalogue.source_ref = _persist_upload(content, catalogue.id, filename)
-
-    # ── AI tagging + categorization (auto on every import; degrades to empty) ──
-    brand_ctx = detected.get("brands") and ", ".join(detected["brands"]) or None
-    sup_ctx = None
-    if supplier_id:
-        _s = db.query(models.Supplier).filter(models.Supplier.id == supplier_id).first()
-        sup_ctx = _s.name if _s else None
-    sup_ctx = sup_ctx or detected.get("supplier")
-    try:
-        suggestions = tagging_service.suggest_tags([
-            {"description": r.get("description"), "brand": brand_ctx, "supplier": sup_ctx}
-            for r in items_raw
-        ])
-    except Exception:
-        suggestions = [{"tags": [], "category": None} for _ in items_raw]
-
-    import json, re
-    def _i(v):
-        try: return int(v) if v is not None else None
-        except (TypeError, ValueError): return None
-    def _f(v):
-        try: return float(v) if v is not None else None
-        except (TypeError, ValueError): return None
-    def _wu(r):
-        # Infer the weight's display/source unit from the printed text (grams stays canonical):
-        # 'lb' when the line states pounds, else 'kg'. The reviewer can override in edit mode.
-        blob = " ".join(str(r.get(k) or "") for k in ("description", "variant", "pack_size")).lower()
-        return 'lb' if re.search(r'\d\s*(lbs?|pounds?)\b', blob) else 'kg'
-    for i, raw in enumerate(items_raw):
-        stub = raw.pop("_stub", False)
-        sug = suggestions[i] if i < len(suggestions) else {"tags": [], "category": None}
-        bt = raw.get("bulk_tiers")
-        _flag = contract_flags.get(i)   # contract validation failure for this row (e.g. cost > rrp)
-        db.add(models.CatalogueItem(
-            import_id=catalogue.id,
-            supplier_id=supplier_id,
-            raw_description=raw.get("description"),
-            original_description=raw.get("original_description"),
-            brand=raw.get("brand"),
-            variant=raw.get("variant"),
-            supplier_sku=raw.get("supplier_sku"),
-            barcode=raw.get("barcode"),
-            cost_price=_f(raw.get("cost_price")),
-            uom=raw.get("uom"),
-            units_per_pack=_i(raw.get("units_per_pack")),
-            min_sellable_qty=_i(raw.get("min_sellable_qty")),
-            pack_size=raw.get("pack_size"),
-            bulk_buy_tiers=raw.get("bulk_buy_tiers"),
-            max_bulk_buy_cost=_f(raw.get("max_bulk_buy_cost")),
-            max_bulk_buy_min_qty=_i(raw.get("max_bulk_buy_min_qty")),
-            # additional OCR-marked fields
-            species=raw.get("species"),
-            weight_grams=_f(raw.get("weight_grams")),
-            weight_unit=_wu(raw),
-            rrp=_f(raw.get("rrp")),
-            min_purchase_qty=_i(raw.get("min_purchase_qty")),
-            bulk_tiers=json.dumps(bt) if isinstance(bt, list) and bt else None,
-            confidence_score=raw.get("confidence", 0.0),
-            confidence_detail=(json.dumps({"contract_flag": _flag["rule"], "why": _flag["detail"]}) if _flag else None),
-            review_status='pending',
-            created_at=now,
-            ai_tags=json.dumps(sug.get("tags") or []) or None,
-            ai_category=(raw.get("category") or sug.get("category")),   # a contract's category wins over the AI guess
-
-            ai_subcategory=sug.get("subcategory"),
-        ))
-
-    # Audit the scan/upload itself (who scanned which file, for which supplier, how many items).
-    audit_log.record(db, action="catalogue.scan", actor=_user, entity_type="catalogue_import",
-                     entity_id=catalogue.id, entity_label=filename,
-                     details={"items": len(items_raw), "format": fmt, "supplier_id": supplier_id,
-                              "detected_supplier": detected.get("supplier"),
-                              "contract": (contract.display_name() if contract else None),
-                              "contract_flags": len(contract_flags), "contract_stale": contract_stale},
-                     request=request)
-    db.commit()
-    db.refresh(catalogue)
-
-    ai_enabled = bool(extraction_service.ANTHROPIC_API_KEY)
-    return {
-        "import_id":   catalogue.id,
-        "filename":    filename,
-        "format":      fmt,
-        "item_count":  len(items_raw),
-        "contract":       (contract.display_name() if contract else None),
-        "contract_flags": len(contract_flags),
-        "contract_stale": contract_stale,
-        "ai_enabled":  ai_enabled,
-        "supplier": {
-            "supplier_id":    supplier_id,
-            "detected_name":  detected.get("supplier"),
-            "detected_brands": detected.get("brands"),
-            "confidence":     sup_conf,
-            "source":         sup_source,
-            "status":         sup_status,                       # 'confirmed' | 'needs_review'
-            "ambiguous":      bool(resolver_out and resolver_out.get("ambiguous")),
-            "candidates":     (resolver_out or {}).get("candidates", []),
+    The evidence-first queued pipeline replaced this endpoint: submission
+    preserves the original file, extraction/conformance run under the supplier
+    contract with durable evidence, and items reach review as mastering
+    candidates. A static 410 keeps the removal self-explanatory for stale
+    clients instead of a bare 404.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "ENDPOINT_REMOVED",
+            "message": "POST /catalogues/import was removed. Submit catalogues via POST /catalogues/ingestions.",
         },
-        "message":     f"Extracted {len(items_raw)} items. {'AI extraction active.' if ai_enabled else 'AI disabled — set ANTHROPIC_API_KEY to enable. Items still visible in review queue.'}",
-    }
+    )
 
 
 class SupplierConfirm(BaseModel):
