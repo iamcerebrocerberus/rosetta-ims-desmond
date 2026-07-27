@@ -525,6 +525,29 @@ def test_stage_services_apply_approved_candidate_and_publish_idempotently(db):
     assert packaging.content_uom_code == "G"
 
     publisher = stages.ServingPublicationService(db)
+    approved_decision_id = supplier_product.approved_review_decision_uuid
+    packaging.review_decision_uuid = "99999999-9999-4999-8999-999999999999"
+    db.flush()
+    with pytest.raises(stages.PublicationIneligible, match="packaging applied from this candidate"):
+        publisher.publish(
+            stages.PublishServingItemCommand(
+                mastering_candidate_id=candidate_id,
+                publication_version="wrong-packaging-provenance",
+            )
+        )
+    packaging.review_decision_uuid = approved_decision_id
+    supplier_product.approved_review_decision_uuid = "99999999-9999-4999-8999-999999999999"
+    db.flush()
+    with pytest.raises(stages.PublicationIneligible, match="Supplier Offer state applied from this candidate"):
+        publisher.publish(
+            stages.PublishServingItemCommand(
+                mastering_candidate_id=candidate_id,
+                publication_version="wrong-offer-provenance",
+            )
+        )
+    supplier_product.approved_review_decision_uuid = approved_decision_id
+    db.flush()
+
     publication = publisher.publish(
         stages.PublishServingItemCommand(
             mastering_candidate_id=candidate_id,
@@ -541,9 +564,19 @@ def test_stage_services_apply_approved_candidate_and_publish_idempotently(db):
             idempotency_key="publish-candidate",
         )
     )
+    same_version_new_key = publisher.publish(
+        stages.PublishServingItemCommand(
+            mastering_candidate_id=candidate_id,
+            publication_version="2026-07-23T00:10:00Z",
+            published_at="2026-07-23T00:11:00+00:00",
+            idempotency_key="different-request-same-version",
+        )
+    )
 
     assert publication.metrics.created_count == 1
     assert repeated_publication.metrics.reused_count == 1
+    assert same_version_new_key.metrics.reused_count == 1
+    assert same_version_new_key.output_ids == publication.output_ids
     serving = db.query(models.CatalogueServingPublication).one()
     assert serving.review_status == "APPROVED"
     assert serving.cost_per_sellable_unit_amount == Decimal("13.1000")

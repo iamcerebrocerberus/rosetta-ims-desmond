@@ -926,17 +926,29 @@ class ServingPublicationService(_TransactionalService):
             raise PublicationIneligible("Serving publication requires an approved Mastering Candidate")
         _raise_if_open_blocking(self.db, catalogue_item_uuid=candidate_row.catalogue_item_uuid)
         candidate = persistence.mastering_candidate_to_contract(candidate_row)
+        _assert_publication_review_provenance(self.db, candidate)
         supplier_product_key = _candidate_supplier_product_key(candidate)
         supplier_product = self.db.query(models.CatalogueSupplierProduct).filter_by(
             supplier_product_key=supplier_product_key
         ).first()
         if supplier_product is None:
             raise PublicationIneligible("Serving publication requires applied Supplier Offer state")
+        decision_id = str(candidate.review_decision_id)
+        if supplier_product.approved_review_decision_uuid != decision_id:
+            raise PublicationIneligible(
+                "Serving publication requires Supplier Offer state applied from this candidate's review decision"
+            )
+        resolved_product = _resolved_product(self.db, candidate.product_variant_resolution)
+        if resolved_product is None or supplier_product.product_variant_id != resolved_product.id:
+            raise PublicationIneligible(
+                "Serving publication requires Supplier Offer state linked to the candidate's canonical product"
+            )
         price = (
             self.db.query(models.CatalogueSupplierPrice)
             .filter_by(
                 supplier_product_id=supplier_product.id,
                 mastering_candidate_uuid=str(candidate.mastering_candidate_id),
+                review_decision_uuid=decision_id,
                 is_current=1,
             )
             .first()
@@ -945,12 +957,18 @@ class ServingPublicationService(_TransactionalService):
             raise PublicationIneligible("Serving publication requires applied current supplier price")
         packaging = (
             self.db.query(models.CataloguePackagingConfiguration)
-            .filter_by(supplier_product_id=supplier_product.id, superseded_at=None)
+            .filter_by(
+                supplier_product_id=supplier_product.id,
+                review_decision_uuid=decision_id,
+                superseded_at=None,
+            )
             .order_by(models.CataloguePackagingConfiguration.id.desc())
             .first()
         )
         if packaging is None:
-            raise PublicationIneligible("Serving publication requires applied packaging configuration")
+            raise PublicationIneligible(
+                "Serving publication requires current packaging applied from this candidate's review decision"
+            )
 
         published_at = command.published_at or _now()
         serving_item_id = _stable_uuid(
@@ -984,6 +1002,25 @@ class ServingPublicationService(_TransactionalService):
             )
 
         publication_key = _publication_key(contract)
+        same_version = (
+            self.db.query(models.CatalogueServingPublication)
+            .filter_by(
+                publication_key=publication_key,
+                publication_version=command.publication_version,
+            )
+            .first()
+        )
+        if same_version is not None:
+            _assert_same_material(
+                _serving_version_material(persistence.serving_item_to_contract(same_version)),
+                _serving_version_material(contract),
+                f"Serving publication version {command.publication_version}",
+            )
+            return StageResult(
+                stage="serving_publication",
+                output_ids=(UUID(same_version.serving_item_uuid),),
+                metrics=StageMetrics(input_count=1, reused_count=1),
+            )
         for current in self.db.query(models.CatalogueServingPublication).filter_by(publication_key=publication_key, is_current=1).all():
             current.is_current = 0
             current.superseded_at = _iso(published_at)
@@ -1440,6 +1477,19 @@ def _resolved_product(db: Session, variant: ProductVariantResolution):
     return product
 
 
+def _assert_publication_review_provenance(db: Session, candidate: MasteringCandidateV1) -> None:
+    if candidate.review_decision_id is None:
+        raise PublicationIneligible("Serving publication requires an explicit review decision")
+    decision = db.query(models.CatalogueReviewDecision).filter_by(
+        review_decision_uuid=str(candidate.review_decision_id),
+        mastering_candidate_uuid=str(candidate.mastering_candidate_id),
+    ).first()
+    if decision is None:
+        raise PublicationIneligible("Serving publication review decision does not exist for this candidate")
+    if decision.review_status != candidate.review_status.value:
+        raise PublicationIneligible("Serving publication review decision does not match candidate approval state")
+
+
 def _serving_contract_from_state(
     db: Session,
     *,
@@ -1791,6 +1841,12 @@ def _candidate_material(contract: MasteringCandidateV1, *, include_review: bool 
 def _serving_material(contract: ServingItemV1) -> dict[str, Any]:
     payload = contract.model_dump(mode="json")
     payload.pop("published_at", None)
+    return payload
+
+
+def _serving_version_material(contract: ServingItemV1) -> dict[str, Any]:
+    payload = _serving_material(contract)
+    payload.pop("serving_item_id", None)
     return payload
 
 
