@@ -166,8 +166,7 @@ def get_catalogue_ingestion_status(
 # ── Per-layer read API ───────────────────────────────────────────────────────
 # Read-only views over the durable records each pipeline layer produced for one
 # run, named by the RAW -> STAGING -> INTERMEDIATE -> SERVING timeline. Records
-# are reconstructed from the persistence contracts. (Serving is deferred until
-# the review/approve/publish flow exists; its rows link via lineage, not run.)
+# are reconstructed from the persistence contracts.
 
 
 @router.get("/ingestions/{run_uuid}/raw")
@@ -288,6 +287,49 @@ def get_intermediate_layer(
         "normalized_rows": normalized_rows,
         "validation_issues": issues,
         "mastering_candidates": candidates,
+    }
+
+
+@router.get("/ingestions/{run_uuid}/serving")
+def get_serving_layer(
+    run_uuid: UUID,
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_capability("catalogue_onboard")),
+) -> dict[str, Any]:
+    """SERVING layer: immutable approved publication snapshots for this run.
+
+    History remains visible for audit; ``current_publications`` is the
+    consumer-safe view and contains only non-superseded snapshots.
+    """
+    _load_run_or_404(db, run_uuid)
+    candidate_ids = [
+        value
+        for (value,) in db.query(models.CatalogueMasteringCandidate.mastering_candidate_uuid)
+        .filter_by(ingestion_run_uuid=str(run_uuid))
+        .all()
+    ]
+    rows = []
+    if candidate_ids:
+        rows = (
+            db.query(models.CatalogueServingPublication)
+            .filter(models.CatalogueServingPublication.mastering_candidate_uuid.in_(candidate_ids))
+            .order_by(models.CatalogueServingPublication.id)
+            .all()
+        )
+    publications = [
+        {
+            "is_current": bool(row.is_current),
+            "superseded_at": row.superseded_at,
+            "snapshot": persistence.serving_item_to_contract(row).model_dump(mode="json"),
+        }
+        for row in rows
+    ]
+    return {
+        "ingestion_run_id": str(run_uuid),
+        "layer": "serving",
+        "publication_count": len(publications),
+        "current_publications": [item["snapshot"] for item in publications if item["is_current"]],
+        "publication_history": publications,
     }
 
 

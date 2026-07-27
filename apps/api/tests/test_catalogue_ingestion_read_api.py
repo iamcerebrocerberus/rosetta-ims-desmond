@@ -1,4 +1,4 @@
-"""Per-layer read API over the catalogue pipeline (raw / staging / intermediate).
+"""Per-layer read API over the catalogue pipeline.
 
 Exercises a real submission + deterministic pipeline run (vision extraction is
 stubbed to return contract-labeled cells; the supplier contract then maps them
@@ -29,7 +29,9 @@ from dependencies import require_user  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from orchestration.catalogue_flows import catalogue_ingestion_flow  # noqa: E402
 from services import catalogue_evidence_extraction as extraction  # noqa: E402
+from services import catalogue_pipeline_stages as stages  # noqa: E402
 from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueSubmissionService  # noqa: E402
+from schemas.catalogue_pipeline.enums import ReviewStatus  # noqa: E402
 
 
 models.Base.metadata.create_all(bind=database.engine)
@@ -107,6 +109,7 @@ def _reset(session):
     ):
         session.query(model).delete()
     session.query(models.CatalogueImport).delete()
+    session.query(models.Product).filter_by(sku_code="10447").delete()
     session.commit()
 
 
@@ -218,11 +221,66 @@ def test_intermediate_layer_returns_normalized_rows_validation_and_candidates(cl
     assert isinstance(body["validation_issues"], list)
 
 
+def test_serving_layer_exposes_only_explicit_immutable_publications(client, db, monkeypatch):
+    db.add(
+        models.Product(
+            sku_code="10447",
+            name="Hill's Healthy Cuisine Chicken 82g",
+            brand="Hill's",
+            category="Food",
+            storage_rule="any",
+            status="ACTIVE",
+            created_at="2026-07-23T00:00:00+00:00",
+            updated_at="2026-07-23T00:00:00+00:00",
+        )
+    )
+    db.commit()
+    run = _run_pipeline(db, monkeypatch)
+    empty = client.get(f"/catalogues/ingestions/{run}/serving").json()
+
+    assert empty == {
+        "ingestion_run_id": str(run),
+        "layer": "serving",
+        "publication_count": 0,
+        "current_publications": [],
+        "publication_history": [],
+    }
+    candidate = db.query(models.CatalogueMasteringCandidate).filter_by(
+        ingestion_run_uuid=str(run)
+    ).one()
+    candidate_id = UUID(candidate.mastering_candidate_uuid)
+    stages.ReviewDecisionService(db).record_decision(
+        stages.RecordReviewDecisionCommand(
+            mastering_candidate_id=candidate_id,
+            actor_id="review-admin",
+            review_status=ReviewStatus.APPROVED,
+            idempotency_key="read-api-approval",
+        )
+    )
+    stages.ApprovedCommercialStateService(db).apply_approved_candidate(
+        stages.ApplyApprovedCandidateCommand(mastering_candidate_id=candidate_id)
+    )
+    stages.ServingPublicationService(db).publish(
+        stages.PublishServingItemCommand(
+            mastering_candidate_id=candidate_id,
+            publication_version="read-api-v1",
+            idempotency_key="read-api-publish",
+        )
+    )
+
+    body = client.get(f"/catalogues/ingestions/{run}/serving").json()
+    assert body["publication_count"] == 1
+    assert len(body["current_publications"]) == 1
+    assert body["current_publications"][0]["canonical_sku"] == "10447"
+    assert body["publication_history"][0]["is_current"] is True
+    assert body["publication_history"][0]["snapshot"] == body["current_publications"][0]
+
+
 def test_read_endpoints_require_authorization(client, db, monkeypatch):
     run = _run_pipeline(db, monkeypatch)
     main.app.dependency_overrides.pop(require_user, None)  # drop the admin override
     try:
-        for layer in ("raw", "staging", "intermediate"):
+        for layer in ("raw", "staging", "intermediate", "serving"):
             assert client.get(f"/catalogues/ingestions/{run}/{layer}").status_code in {401, 403}
     finally:
         main.app.dependency_overrides[require_user] = lambda: _Admin()
@@ -230,7 +288,7 @@ def test_read_endpoints_require_authorization(client, db, monkeypatch):
 
 def test_unknown_run_returns_404(client):
     missing = "99999999-9999-4999-8999-999999999999"
-    for layer in ("raw", "staging", "intermediate"):
+    for layer in ("raw", "staging", "intermediate", "serving"):
         response = client.get(f"/catalogues/ingestions/{missing}/{layer}")
         assert response.status_code == 404
         assert response.json()["detail"]["code"] == "INGESTION_RUN_NOT_FOUND"
