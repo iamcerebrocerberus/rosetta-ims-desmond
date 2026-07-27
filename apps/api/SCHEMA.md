@@ -285,8 +285,9 @@ Authentication users. `role` is `admin` or `data_entry`. Passwords stored as bcr
 - These tables back the CIS-103 Pydantic contracts through `services/catalogue_pipeline_persistence.py`
 - Current `/v1/catalogues`, reparse, inventory and supplier-term endpoints still use the legacy runtime tables
 - The v2 submission and Prefect orchestration path can now create source, run, Raw Observation, Staging, Validation Issue and pending-review Mastering Candidate records
-- Run-scoped HITL review/application/publication and Serving lineage reads are
-  implemented; UI integration and legacy consumer-read cutover remain deferred
+- Run-scoped HITL review/application/publication plus run- and product-centric
+  Serving reads are implemented; UI composition with legacy operational
+  inventory data remains deferred
 
 See `docs/architecture/catalogue-logical-persistence-model.md` for the ER model, contract-to-persistence matrix, migration/backfill rules and legacy compatibility boundaries.
 
