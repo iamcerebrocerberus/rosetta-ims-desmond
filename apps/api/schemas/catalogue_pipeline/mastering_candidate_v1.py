@@ -83,6 +83,14 @@ class MbbResolution(ResolutionBase):
     terms: list[MbbTerm] = Field(default_factory=list, description="Resolved MBB terms or tiers.")
     selected_term: MbbSelection | None = Field(None, description="Selected best/applicable term when known.")
 
+    @model_validator(mode="after")
+    def _selection_references_a_term(self):
+        if self.selected_term is not None:
+            term_ids = {term.mbb_term_id for term in self.terms}
+            if self.selected_term.selected_term_id not in term_ids:
+                raise ValueError("selected MBB term must reference one of the resolved terms")
+        return self
+
 
 class OptionalTextResolution(ResolutionBase):
     """Optional mastered text resolution, such as Brand or Category."""

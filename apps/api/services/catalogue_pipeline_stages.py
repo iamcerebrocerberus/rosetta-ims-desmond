@@ -591,12 +591,12 @@ class MasteringService(_TransactionalService):
                 "lineage": lineage.model_dump(mode="json"),
                 "supplier_product_resolution": _model_or_default(
                     command.supplier_product_resolution,
-                    _default_supplier_product_resolution(staging),
+                    _default_supplier_product_resolution(self.db, staging),
                     SupplierProductResolution,
                 ),
                 "product_variant_resolution": _model_or_default(
                     command.product_variant_resolution,
-                    _default_product_variant_resolution(staging),
+                    _default_product_variant_resolution(self.db, staging),
                     ProductVariantResolution,
                 ),
                 "packaging_resolution": _model_or_default(
@@ -657,6 +657,10 @@ class ReviewDecisionService(_TransactionalService):
             )
         if command.review_status in {ReviewStatus.APPROVED, ReviewStatus.APPROVED_WITH_OVERRIDE}:
             _raise_if_open_blocking(self.db, catalogue_item_uuid=candidate.catalogue_item_uuid)
+            _assert_candidate_applicable(
+                self.db,
+                persistence.mastering_candidate_to_contract(candidate),
+            )
 
         decided_at = command.decided_at or _now()
         decision_id = _stable_uuid(
@@ -733,6 +737,7 @@ class ApprovedCommercialStateService(_TransactionalService):
             )
         _raise_if_open_blocking(self.db, catalogue_item_uuid=candidate_row.catalogue_item_uuid)
         candidate = persistence.mastering_candidate_to_contract(candidate_row)
+        _assert_candidate_applicable(self.db, candidate)
         applied_at = command.applied_at or _now()
 
         supplier_product_key = _candidate_supplier_product_key(candidate)
@@ -781,7 +786,8 @@ class ApprovedCommercialStateService(_TransactionalService):
         supplier_id = supplier_resolution.supplier_id or _supplier_id_from_source(self.db, candidate.trace.supplier_catalogue_id)
         if supplier_id is None:
             raise AmbiguousSupplierOffer("Supplier Product application requires supplier_id")
-        product_id = _product_id_for_sku(self.db, product_resolution.canonical_sku)
+        product = _resolved_product(self.db, product_resolution)
+        product_id = product.id if product else None
         row = models.CatalogueSupplierProduct(
             supplier_product_key=supplier_product_key,
             supplier_id=supplier_id,
@@ -805,7 +811,8 @@ class ApprovedCommercialStateService(_TransactionalService):
     ) -> None:
         supplier_product.supplier_sku = candidate.supplier_product_resolution.supplier_sku
         supplier_product.barcode = candidate.supplier_product_resolution.barcode
-        supplier_product.product_variant_id = _product_id_for_sku(self.db, candidate.product_variant_resolution.canonical_sku)
+        product = _resolved_product(self.db, candidate.product_variant_resolution)
+        supplier_product.product_variant_id = product.id if product else None
         supplier_product.approved_review_decision_uuid = str(candidate.review_decision_id) if candidate.review_decision_id else None
         supplier_product.updated_at = _iso(applied_at)
 
@@ -1209,30 +1216,111 @@ def _review_requirement(
     return ReviewRequirement.NOT_REQUIRED
 
 
-def _default_supplier_product_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
-    source = _source_document_for_trace(staging)
-    supplier_id = source.supplier_id if source else None
+def _default_supplier_product_resolution(db: Session, staging: NormalizedRowV1) -> dict[str, Any]:
+    supplier_id = _supplier_id_from_source(db, staging.trace.supplier_catalogue_id)
     supplier_sku = _proposal_text(staging.normalized_fields.supplier_sku) or staging.raw_fields.supplier_sku
+    barcode = _proposal_text(staging.normalized_fields.barcode) or staging.raw_fields.barcode
+    matches = _supplier_product_matches(db, supplier_id=supplier_id, supplier_sku=supplier_sku, barcode=barcode)
+    if len(matches) > 1:
+        raise AmbiguousSupplierOffer("Supplier SKU/barcode resolves to multiple supplier offerings")
+    if matches:
+        match = matches[0]
+        return {
+            "state": ResolutionState.PROPOSED_MATCH.value,
+            "confidence": "1",
+            "supplier_id": supplier_id,
+            "supplier_product_id": match["supplier_product_id"],
+            "supplier_sku": supplier_sku,
+            "barcode": barcode,
+        }
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if supplier_sku else ResolutionState.UNRESOLVED.value,
         "supplier_id": supplier_id,
         "supplier_product_id": f"supplier:{supplier_id}:offer:{supplier_sku}" if supplier_id and supplier_sku else None,
         "supplier_sku": supplier_sku,
-        "barcode": _proposal_text(staging.normalized_fields.barcode) or staging.raw_fields.barcode,
+        "barcode": barcode,
     }
 
 
-def _default_product_variant_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
+def _default_product_variant_resolution(db: Session, staging: NormalizedRowV1) -> dict[str, Any]:
     proposed_name = _proposal_text(staging.normalized_fields.product_name) or staging.raw_fields.product_name
     supplier_sku = _proposal_text(staging.normalized_fields.supplier_sku) or staging.raw_fields.supplier_sku
+    barcode = _proposal_text(staging.normalized_fields.barcode) or staging.raw_fields.barcode
+    supplier_id = _supplier_id_from_source(db, staging.trace.supplier_catalogue_id)
+    product = _exact_product_match(
+        db,
+        supplier_id=supplier_id,
+        supplier_sku=supplier_sku,
+        barcode=barcode,
+    )
+    if product is not None:
+        return {
+            "state": ResolutionState.PROPOSED_MATCH.value,
+            "confidence": "1",
+            "canonical_sku": product.sku_code,
+            "product_variant_id": product.sku_code,
+            "product_variant_name": product.name,
+            "proposed_name": proposed_name,
+            "product_family_id": None,
+        }
     return {
         "state": ResolutionState.PROPOSED_CREATE.value if proposed_name else ResolutionState.UNRESOLVED.value,
-        "canonical_sku": supplier_sku,
-        "product_variant_id": supplier_sku,
+        "canonical_sku": None,
+        "product_variant_id": None,
         "product_variant_name": proposed_name,
         "proposed_name": proposed_name,
         "product_family_id": None,
     }
+
+
+def _supplier_product_matches(
+    db: Session,
+    *,
+    supplier_id: int | None,
+    supplier_sku: str | None,
+    barcode: str | None,
+) -> list[dict[str, Any]]:
+    if supplier_id is None:
+        return []
+    matches: dict[str, dict[str, Any]] = {}
+    current_rows = db.query(models.CatalogueSupplierProduct).filter_by(supplier_id=supplier_id).all()
+    for row in current_rows:
+        if (supplier_sku and row.supplier_sku == supplier_sku) or (barcode and row.barcode == barcode):
+            matches[row.supplier_product_key] = {
+                "supplier_product_id": row.supplier_product_key,
+                "product_id": row.product_variant_id,
+            }
+    if matches:
+        return list(matches.values())
+    legacy_rows = db.query(models.ProductSupplier).filter_by(supplier_id=supplier_id).all()
+    for row in legacy_rows:
+        if (supplier_sku and row.supplier_sku == supplier_sku) or (barcode and row.barcode == barcode):
+            key = f"legacy-product-supplier:{row.id}"
+            matches[key] = {"supplier_product_id": key, "product_id": row.product_id}
+    return list(matches.values())
+
+
+def _exact_product_match(
+    db: Session,
+    *,
+    supplier_id: int | None,
+    supplier_sku: str | None,
+    barcode: str | None,
+):
+    supplier_matches = _supplier_product_matches(
+        db,
+        supplier_id=supplier_id,
+        supplier_sku=supplier_sku,
+        barcode=barcode,
+    )
+    product_ids = {match["product_id"] for match in supplier_matches if match.get("product_id")}
+    if len(product_ids) > 1:
+        raise AmbiguousProductVariant("Supplier identity resolves to multiple canonical products")
+    if product_ids:
+        return db.get(models.Product, next(iter(product_ids)))
+    if supplier_sku:
+        return db.query(models.Product).filter_by(sku_code=supplier_sku).first()
+    return None
 
 
 def _default_packaging_resolution(staging: NormalizedRowV1) -> dict[str, Any]:
@@ -1279,13 +1367,6 @@ def _proposal_text(value) -> str | None:
     return value.value if value is not None else None
 
 
-def _source_document_for_trace(staging: NormalizedRowV1):
-    # Filled by tests/services that already have the same module-level database
-    # session would be leaky, so this function intentionally returns None. The
-    # supplier_id is supplied by explicit mastering commands when needed.
-    return None
-
-
 def _candidate_supplier_product_key(candidate: MasteringCandidateV1) -> str:
     resolution = candidate.supplier_product_resolution
     supplier_id = resolution.supplier_id
@@ -1297,6 +1378,66 @@ def _candidate_supplier_product_key(candidate: MasteringCandidateV1) -> str:
     if str(identity).startswith("supplier:"):
         return str(identity)
     return f"supplier:{supplier_id}:offer:{identity}"
+
+
+def _assert_candidate_applicable(db: Session, candidate: MasteringCandidateV1) -> None:
+    supplier = candidate.supplier_product_resolution
+    expected_supplier_id = _supplier_id_from_source(db, candidate.trace.supplier_catalogue_id)
+    if supplier.state == ResolutionState.UNRESOLVED or supplier.supplier_id is None:
+        raise AmbiguousSupplierOffer("Candidate requires a resolved supplier identity before approval")
+    if expected_supplier_id is not None and supplier.supplier_id != expected_supplier_id:
+        raise SupplierContractMismatch("Candidate supplier resolution does not match its source catalogue")
+    if not (supplier.supplier_sku or supplier.barcode or supplier.supplier_product_id):
+        raise AmbiguousSupplierOffer("Candidate requires a supplier SKU, barcode, or supplier-product identity")
+    if supplier.state in {ResolutionState.PROPOSED_MATCH, ResolutionState.CONFIRMED_MATCH}:
+        matches = _supplier_product_matches(
+            db,
+            supplier_id=supplier.supplier_id,
+            supplier_sku=supplier.supplier_sku,
+            barcode=supplier.barcode,
+        )
+        if not any(match["supplier_product_id"] == supplier.supplier_product_id for match in matches):
+            raise AmbiguousSupplierOffer("Candidate supplier-product match does not exist or conflicts with its source identity")
+
+    variant = candidate.product_variant_resolution
+    if variant.state not in {ResolutionState.PROPOSED_MATCH, ResolutionState.CONFIRMED_MATCH}:
+        raise AmbiguousProductVariant(
+            "Candidate must match an existing canonical product before approval; canonical product creation is not implemented"
+        )
+    product = _resolved_product(db, variant)
+    if product is None:
+        raise AmbiguousProductVariant("Candidate canonical product match does not exist")
+    if variant.canonical_sku and variant.canonical_sku != product.sku_code:
+        raise AmbiguousProductVariant("Candidate canonical SKU conflicts with its Product Variant identity")
+    if variant.product_variant_id and variant.product_variant_id not in {product.sku_code, str(product.id)}:
+        raise AmbiguousProductVariant("Candidate Product Variant identity conflicts with its canonical product")
+
+    packaging = candidate.packaging_resolution
+    if packaging.state == ResolutionState.UNRESOLVED or packaging.packaging is None:
+        raise InvalidStageTransition("Candidate requires resolved packaging before approval")
+    price = candidate.supplier_price_resolution
+    if price.state == ResolutionState.UNRESOLVED or price.current_cost is None:
+        raise InvalidStageTransition("Candidate requires a resolved supplier cost before approval")
+    packaging_basis = packaging.packaging.price_basis
+    price_basis = price.current_cost.price_basis
+    if (
+        packaging_basis is not None
+        and packaging_basis.code is not None
+        and price_basis.code is not None
+        and packaging_basis.code != price_basis.code
+    ):
+        raise InvalidStageTransition("Candidate packaging price basis conflicts with supplier cost price basis")
+
+
+def _resolved_product(db: Session, variant: ProductVariantResolution):
+    product = None
+    if variant.canonical_sku:
+        product = db.query(models.Product).filter_by(sku_code=variant.canonical_sku).first()
+    if product is None and variant.product_variant_id:
+        product = db.query(models.Product).filter_by(sku_code=variant.product_variant_id).first()
+        if product is None and str(variant.product_variant_id).isdigit():
+            product = db.get(models.Product, int(variant.product_variant_id))
+    return product
 
 
 def _serving_contract_from_state(

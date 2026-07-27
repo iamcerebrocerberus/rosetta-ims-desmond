@@ -184,6 +184,9 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     candidate_contract = persistence.mastering_candidate_to_contract(candidate)
     assert candidate_contract.review_status == ReviewStatus.PENDING_REVIEW
     assert candidate_contract.product_variant_resolution.product_family_id is None
+    assert candidate_contract.product_variant_resolution.state.value == "PROPOSED_MATCH"
+    assert candidate_contract.product_variant_resolution.canonical_sku == "10447"
+    assert candidate_contract.product_variant_resolution.product_variant_name == "Hill's Healthy Cuisine Chicken 82g"
     assert candidate_contract.supplier_product_resolution.supplier_id == 14
     assert candidate_contract.supplier_product_resolution.supplier_sku == "10447"
 
@@ -326,7 +329,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert serving_contract.contract_version == "catalogue.serving_item.v1"
     assert serving_contract.review_status == ReviewStatus.APPROVED
     assert serving_contract.canonical_sku == "10447"
-    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken Adult 82g"
+    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken 82g"
     assert serving_contract.supplier_offering.supplier_sku == "10447"
     assert serving_contract.current_approved_cost.amount == Decimal("13.10")
     assert serving_contract.current_approved_cost.currency == "HKD"
