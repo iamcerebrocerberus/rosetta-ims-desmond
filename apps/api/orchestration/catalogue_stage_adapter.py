@@ -107,32 +107,14 @@ def mastering_command_for_claim(
     application semantics are implied here.
     """
 
-    supplier_sku = _proposal_or_raw(item, "supplier_sku")
-    product_name = _proposal_or_raw(item, "product_name")
-    barcode = _proposal_or_raw(item, "barcode")
-    supplier_resolution = {
-        "state": "PROPOSED_CREATE" if supplier_sku else "UNRESOLVED",
-        "supplier_id": run_identity.supplier_id,
-        "supplier_product_id": (
-            f"supplier:{run_identity.supplier_id}:offer:{supplier_sku}" if supplier_sku else None
-        ),
-        "supplier_sku": supplier_sku,
-        "barcode": barcode,
-    }
-    product_resolution = {
-        "state": "PROPOSED_CREATE" if product_name else "UNRESOLVED",
-        "canonical_sku": supplier_sku,
-        "product_variant_id": supplier_sku,
-        "product_variant_name": product_name,
-        "proposed_name": product_name,
-        "product_family_id": None,
-    }
     return stages.PrepareMasteringCandidateCommand(
         catalogue_item_id=catalogue_item_id,
         idempotency_key=item.observation_key,
-        supplier_product_resolution=supplier_resolution,
-        product_variant_resolution=product_resolution,
-        metadata={"source_observation_key": item.observation_key, "human_review_required": True},
+        metadata={
+            "source_observation_key": item.observation_key,
+            "supplier_id": run_identity.supplier_id,
+            "human_review_required": True,
+        },
     )
 
 
