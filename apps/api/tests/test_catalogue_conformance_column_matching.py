@@ -22,6 +22,7 @@ from services.catalogue_conformance import conform_observations  # noqa: E402
 from services.catalogue_evidence_extraction import ExtractedEvidence  # noqa: E402
 from schemas.catalogue_pipeline.enums import ExtractionMethod  # noqa: E402
 from schemas.catalogue_pipeline.extracted_evidence_v1 import RawCell, SourceLocation  # noqa: E402
+from schemas.catalogue_pipeline.supplier_contracts import get_supplier_source_contract  # noqa: E402
 
 
 def _observation(cells: dict[str, str]) -> ExtractedEvidence:
@@ -93,3 +94,82 @@ def test_bilingual_cell_values_compose_a_clean_english_product_name():
     # CJK removed — no recomposition beyond the contract (no brand/size, no dedup).
     assert row.raw_fields["product_name"] == "健康燉肉 Healthy Cuisine 幼貓 Kitten 健康燉肉配方 Healthy Cuisine"
     assert row.normalized_fields["product_name"]["value"] == "Healthy Cuisine Kitten Healthy Cuisine"
+
+
+def test_contract_aliases_are_executable_and_declared_values_are_preserved():
+    declaration = get_supplier_source_contract("kangaroo.mixed_price_catalogue.v1", "v1").declaration
+    contract = runtime.SupplierSourceRuntimeContract(declaration=declaration)
+    alias_row = {
+        "SKU#": "KPN-10",
+        "Product Description": "Duck bites",
+        "Size": "100g",
+        "Price Per Unit": "42.50",
+        "Retail Price Per Unit": "55.00",
+        "section_header": "2026-07-01",
+        "section_notes": "Buy 10 get 1 free",
+    }
+
+    outcome = conform_observations((_observation(alias_row),), (uuid4(),), contract)
+    row = outcome.items[0]
+
+    assert not [issue for issue in outcome.issues if issue.issue_code == "CONTRACT_REQUIRED_HEADER_MISSING"]
+    assert row.raw_fields["supplier_sku"] == "KPN-10"
+    assert row.raw_fields["rrp"] == "55.00"
+    assert row.raw_fields["mbb_text"] == "Buy 10 get 1 free"
+    assert row.raw_fields["effective_date"] == "2026-07-01"
+    assert row.raw_fields["additional_fields"]["supplier_sku"] == "KPN-10"
+    assert row.raw_fields["additional_fields"]["cost"] == "42.50"
+    assert row.normalized_fields["rrp"]["amount"] == "55.00"
+    assert row.normalized_fields["effective_date"]["value"] == "2026-07-01"
+
+
+def test_missing_required_row_field_is_explicit_and_blocking():
+    hills = runtime.load_contract(14)
+    incomplete_row = {
+        "Product Code 產品編號": "10447",
+        "Product Range 產品系列": "Science Plan",
+        "Life Stage 生命階段": "Adult",
+        "Product Description 產品名稱": "Chicken 82g",
+        "Size 重量": "82g",
+        # Required wholesale price is missing.
+        "Order Multiple 訂貨單位": "12",
+    }
+
+    row = conform_observations((_observation(incomplete_row),), (uuid4(),), hills).items[0]
+
+    missing = {issue.field_key for issue in row.issues if issue.issue_code == "CONTRACT_REQUIRED_FIELD_MISSING"}
+    assert missing == {"cost"}
+    assert any(issue.severity == "BLOCKING" for issue in row.issues)
+
+
+def test_missing_required_document_header_is_not_silently_accepted():
+    hills = runtime.load_contract(14)
+    incomplete_shape = {
+        "Product Code 產品編號": "10447",
+        "Product Range 產品系列": "Science Plan",
+        "Product Description 產品名稱": "Chicken 82g",
+    }
+
+    outcome = conform_observations((_observation(incomplete_shape),), (uuid4(),), hills)
+
+    issue_codes = {issue.issue_code for issue in outcome.issues}
+    assert "CONTRACT_REQUIRED_HEADER_MISSING" in issue_codes
+    assert outcome.metadata["degraded"] is True
+
+
+def test_declared_validation_rule_runs_in_the_authoritative_conformance_path():
+    hills = runtime.load_contract(14)
+    invalid_price_row = {
+        "Product Code 產品編號": "10447",
+        "Product Range 產品系列": "Science Plan",
+        "Life Stage 生命階段": "Adult",
+        "Product Description 產品名稱": "Chicken 82g",
+        "Size 重量": "82g",
+        "Gross Wholesale Price 折扣前批發價（每包／罐）": "25.00",
+        "Recommended Retail Selling Price 建議零售價": "20.00",
+        "Order Multiple 訂貨單位": "12",
+    }
+
+    row = conform_observations((_observation(invalid_price_row),), (uuid4(),), hills).items[0]
+
+    assert "HILLS_COST_NOT_BELOW_RRP" in {issue.issue_code for issue in row.issues}

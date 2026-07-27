@@ -171,6 +171,12 @@ class CostProposal(Cost):
     evidence: FieldEvidence | None = Field(None, description="Evidence supporting this cost proposal.")
 
 
+class MoneyProposal(Money):
+    """Proposed monetary value with optional provenance."""
+
+    evidence: FieldEvidence | None = Field(None, description="Evidence supporting this monetary proposal.")
+
+
 class PackagingProposal(PackagingConfiguration):
     """Proposed packaging configuration with optional provenance."""
 

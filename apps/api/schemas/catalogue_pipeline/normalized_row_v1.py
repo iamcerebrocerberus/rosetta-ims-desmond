@@ -13,6 +13,7 @@ from .common import (
     CostProposal,
     JsonObject,
     MbbTerm,
+    MoneyProposal,
     PackagingProposal,
     PipelineTrace,
     TextProposal,
@@ -32,10 +33,20 @@ class ClaimRawFields(ContractModel):
     brand: str | None = Field(None, description="Brand text exactly as printed.")
     category: str | None = Field(None, description="Category/section text exactly as printed.")
     cost: str | None = Field(None, description="Cost text exactly as printed, including symbols or notes.")
+    rrp: str | None = Field(None, description="Recommended retail price exactly as printed.")
     packaging: str | None = Field(None, description="Packaging text exactly as printed.")
     mbb_text: str | None = Field(None, description="Raw Max Bulk Buy / discount text.")
     barcode: str | None = Field(None, description="Barcode exactly as printed.")
     variant: str | None = Field(None, description="Variant/size/flavour text exactly as printed.")
+    species: str | None = Field(None, description="Species text exactly as printed.")
+    segment: str | None = Field(None, description="Supplier segment text exactly as printed.")
+    effective_date: str | None = Field(None, description="Effective-date text exactly as printed.")
+    content_measure: str | None = Field(None, description="Content measure exactly as printed.")
+    row_eligibility: str | None = Field(None, description="Source value used to establish row eligibility.")
+    additional_fields: JsonObject = Field(
+        default_factory=dict,
+        description="All contract-declared source values preserved by stable field key.",
+    )
     source_row_label: str | None = Field(None, description="Human-readable source row label when useful.")
 
 
@@ -49,7 +60,11 @@ class NormalizedCatalogueFields(ContractModel):
     barcode: TextProposal | None = Field(None, description="Proposed barcode.")
     variant: TextProposal | None = Field(None, description="Proposed variant.")
     cost: CostProposal | None = Field(None, description="Proposed basis-aware supplier cost.")
+    rrp: MoneyProposal | None = Field(None, description="Proposed recommended retail price.")
     packaging: PackagingProposal | None = Field(None, description="Proposed packaging configuration.")
+    species: TextProposal | None = Field(None, description="Proposed species classification.")
+    segment: TextProposal | None = Field(None, description="Proposed supplier segment.")
+    effective_date: TextProposal | None = Field(None, description="Proposed effective-date text pending date normalization.")
     mbb_terms: list[MbbTerm] = Field(default_factory=list, description="Proposed MBB terms or tiers.")
 
 

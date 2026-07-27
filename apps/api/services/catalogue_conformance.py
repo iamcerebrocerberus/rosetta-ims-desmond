@@ -30,7 +30,26 @@ from typing import Any
 from uuid import UUID
 
 from schemas.catalogue_pipeline.enums import UnitCode
+from schemas.catalogue_pipeline.supplier_contracts.common import SourceFieldRequirement
 from services.catalogue_evidence_extraction import ExtractedEvidence
+
+
+@dataclass(frozen=True)
+class ContractExecutionIssue:
+    """Machine-readable contract condition that must not be silently ignored."""
+
+    issue_code: str
+    message: str
+    severity: str = "WARNING"
+    field_key: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "issue_code": self.issue_code,
+            "severity": self.severity,
+            "message": self.message,
+            "field_key": self.field_key,
+        }
 
 
 @dataclass(frozen=True)
@@ -49,6 +68,7 @@ class ConformedRow:
     normalized_fields: dict[str, Any]
     provenance: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+    issues: tuple[ContractExecutionIssue, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -64,6 +84,7 @@ class ConformanceOutcome:
     warnings: tuple[str, ...] = ()
     skipped_count: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
+    issues: tuple[ContractExecutionIssue, ...] = ()
 
 
 def conform_observations(
@@ -76,7 +97,8 @@ def conform_observations(
     if len(observations) != len(raw_observation_ids):
         raise ValueError("observations and evidence ids must align")
 
-    warnings: list[str] = []
+    document_issues = _document_issues(observations, runtime_contract)
+    warnings: list[str] = [issue.message for issue in document_issues]
     items: list[ConformedRow] = []
     skipped = 0
     unconformable = 0
@@ -88,9 +110,23 @@ def conform_observations(
                 # Header row — evidence, not a row.
                 skipped += 1
                 continue
-            items.append(
-                _item_from_fields(observation, raw_id, fields, runtime_contract, provenance=_provenance("contract_cells"))
+            row_issues = (
+                document_issues
+                + _required_field_issues(fields, runtime_contract)
+                + _validation_rule_issues(fields, runtime_contract)
             )
+            items.append(
+                _item_from_fields(
+                    observation,
+                    raw_id,
+                    fields,
+                    runtime_contract,
+                    provenance=_provenance("contract_cells"),
+                    warnings=tuple(issue.message for issue in row_issues),
+                    issues=row_issues,
+                )
+            )
+            warnings.extend(f"{key}: {issue.message}" for issue in row_issues)
             continue
 
         # No structured cells to map through the contract. Never invent fields;
@@ -106,6 +142,13 @@ def conform_observations(
                 runtime_contract,
                 provenance=_provenance("unconformable"),
                 warnings=(message,),
+                issues=(
+                    ContractExecutionIssue(
+                        issue_code="CONTRACT_ROW_UNCONFORMABLE",
+                        severity="BLOCKING",
+                        message=message,
+                    ),
+                ),
             )
         )
 
@@ -117,8 +160,13 @@ def conform_observations(
             "conformed_items": len(items),
             "skipped_header_rows": skipped,
             "unconformable_items": unconformable,
-            "degraded": unconformable > 0,
+            "contract_issue_count": len(document_issues) + sum(len(item.issues) for item in items),
+            "document_issues": [issue.as_dict() for issue in document_issues],
+            "declared_row_eligibility_rules": list(runtime_contract.declaration.source_structure.row_eligibility_rules),
+            "declared_skip_rules": list(runtime_contract.declaration.source_structure.skip_rules),
+            "degraded": unconformable > 0 or bool(document_issues) or any(item.issues for item in items),
         },
+        issues=document_issues,
     )
 
 
@@ -147,11 +195,35 @@ def _fields_from_cells(observation: ExtractedEvidence, runtime_contract) -> dict
     if not cell_by_key:
         return {}
 
-    def _lookup(column_name: str) -> str | None:
+    def _lookup(*column_names: str) -> str | None:
+        for column_name in column_names:
+            for key in _column_keys(column_name):
+                if key in cell_by_key:
+                    return cell_by_key[key]
+        return None
+
+    def _lookup_field(contract_field) -> str | None:
+        names = tuple(
+            filter(
+                None,
+                (
+                    contract_field.source_column,
+                    contract_field.source_path,
+                    *contract_field.aliases,
+                ),
+            )
+        )
+        return _lookup(*names)
+
+    def _lookup_composed(column_name: str) -> str | None:
+        aliases: list[str] = []
+        for candidate in runtime_contract.declaration.fields:
+            if candidate.source_column == column_name or candidate.source_path == column_name:
+                aliases.extend(candidate.aliases)
         for key in _column_keys(column_name):
             if key in cell_by_key:
                 return cell_by_key[key]
-        return None
+        return _lookup(*aliases)
 
     # Header row: its cell VALUES repeat the contract's declared source columns.
     source_keys: set[str] = set()
@@ -160,6 +232,8 @@ def _fields_from_cells(observation: ExtractedEvidence, runtime_contract) -> dict
             None, (contract_field.source_column, contract_field.source_path, *(contract_field.composed_from or ()))
         ):
             source_keys.update(_column_keys(source_name))
+        for alias in contract_field.aliases:
+            source_keys.update(_column_keys(alias))
     header_hits = sum(1 for value in row_values if any(key in source_keys for key in _column_keys(value)))
     if header_hits >= max(2, len(row_values) - 1):
         return None
@@ -167,21 +241,21 @@ def _fields_from_cells(observation: ExtractedEvidence, runtime_contract) -> dict
     fields: dict[str, Any] = {}
     for contract_field in runtime_contract.declaration.fields:
         target = _role_target(contract_field.role)
-        if target is None or target in fields:
-            continue
-        value: Any = None
-        for source_name in filter(None, (contract_field.source_column, contract_field.source_path)):
-            value = _lookup(source_name)
-            if value is not None:
-                break
+        if target is None:
+            target = f"additional:{contract_field.field_key}"
+        value: Any = _lookup_field(contract_field)
         if value is None and contract_field.composed_from:
-            parts = [part for part in (_lookup(column) for column in contract_field.composed_from) if part]
+            parts = [part for part in (_lookup_composed(column) for column in contract_field.composed_from) if part]
             if parts:
                 value = " ".join(parts)
         if value is None and contract_field.constant_value is not None:
             value = contract_field.constant_value
         if value is not None:
-            fields[target] = value
+            # Preserve every declaration by its stable contract field key even
+            # when multiple fields share one semantic role (for example pack
+            # size and units per case are both PACKAGING).
+            fields[f"source:{contract_field.field_key}"] = value
+            fields.setdefault(target, value)
     if observation.confidence is not None:
         fields.setdefault("confidence", str(observation.confidence))
     return fields
@@ -195,7 +269,13 @@ def _item_from_fields(
     *,
     provenance: dict[str, Any] | None = None,
     warnings: tuple[str, ...] = (),
+    issues: tuple[ContractExecutionIssue, ...] = (),
 ) -> ConformedRow:
+    additional_fields = {
+        key.removeprefix("source:"): value
+        for key, value in fields.items()
+        if key.startswith("source:")
+    }
     raw_fields = {
         "supplier_sku": _text(fields.get("supplier_sku")),
         "product_name": _text(fields.get("description")),
@@ -203,10 +283,17 @@ def _item_from_fields(
         "brand": _text(fields.get("brand")),
         "category": _text(fields.get("category")),
         "cost": _raw_money_text(fields.get("cost_price")),
+        "rrp": _raw_money_text(fields.get("rrp")),
         "packaging": _text(fields.get("pack_size") or fields.get("uom")),
         "mbb_text": _text(fields.get("bulk_buy_tiers")),
         "barcode": _text(fields.get("barcode")),
         "variant": _text(fields.get("variant")),
+        "species": _text(fields.get("species")),
+        "segment": _text(fields.get("segment")),
+        "effective_date": _text(fields.get("effective_date")),
+        "content_measure": _text(fields.get("content_measure")),
+        "row_eligibility": _text(fields.get("row_eligibility")),
+        "additional_fields": additional_fields,
         "source_row_label": observation.observation_key,
     }
     evidence = {
@@ -227,6 +314,9 @@ def _item_from_fields(
         ("category", "category"),
         ("barcode", "barcode"),
         ("variant", "variant"),
+        ("species", "species"),
+        ("segment", "segment"),
+        ("effective_date", "effective_date"),
     ):
         value = _text(fields.get(source_key))
         if value is not None:
@@ -235,6 +325,9 @@ def _item_from_fields(
     cost = _cost_proposal(fields.get("cost_price"), runtime_contract, evidence)
     if cost is not None:
         normalized["cost"] = cost
+    rrp = _money_proposal(fields.get("rrp"), runtime_contract, evidence)
+    if rrp is not None:
+        normalized["rrp"] = rrp
     packaging = _packaging_proposal(fields, runtime_contract, evidence)
     if packaging is not None:
         normalized["packaging"] = packaging
@@ -246,10 +339,143 @@ def _item_from_fields(
         normalized_fields=normalized,
         provenance=dict(provenance or {}),
         warnings=warnings,
+        issues=issues,
     )
 
 
+def _money_proposal(value: Any, runtime_contract, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    amount = _decimal_or_none(value)
+    if amount is None:
+        return None
+    return {
+        "amount": str(amount),
+        "currency": runtime_contract.declaration.pricing.currency,
+        "evidence": evidence,
+    }
+
+
+def _validation_rule_issues(
+    fields: dict[str, Any],
+    runtime_contract,
+) -> tuple[ContractExecutionIssue, ...]:
+    """Execute the small, declared v1 rule vocabulary without evaluating code."""
+
+    issues: list[ContractExecutionIssue] = []
+    for rule in runtime_contract.declaration.validation_rules:
+        failed = False
+        cost = _decimal_or_none(fields.get("cost_price"))
+        rrp = _decimal_or_none(fields.get("rrp"))
+        increment = _decimal_or_none(fields.get("order_increment_qty"))
+        if rule.source_expression == "cost_price < rrp":
+            failed = cost is not None and rrp is not None and cost >= rrp
+        elif rule.source_expression == "cost_price > 0":
+            failed = cost is not None and cost <= 0
+        elif rule.source_expression == "order_increment_qty >= 1":
+            failed = increment is not None and increment < 1
+        elif rule.source_expression:
+            issues.append(
+                ContractExecutionIssue(
+                    issue_code="CONTRACT_VALIDATION_RULE_UNSUPPORTED",
+                    severity="WARNING",
+                    field_key=rule.rule_id,
+                    message=f"Contract validation rule '{rule.rule_id}' has no deterministic executor.",
+                )
+            )
+            continue
+        if failed:
+            issues.append(
+                ContractExecutionIssue(
+                    issue_code=rule.issue_code,
+                    severity=rule.severity.value,
+                    field_key=rule.rule_id,
+                    message=rule.review_guidance,
+                )
+            )
+    return tuple(issues)
+
+
+def _required_field_issues(
+    fields: dict[str, Any],
+    runtime_contract,
+) -> tuple[ContractExecutionIssue, ...]:
+    issues: list[ContractExecutionIssue] = []
+    for contract_field in runtime_contract.declaration.fields:
+        if contract_field.requirement != SourceFieldRequirement.REQUIRED:
+            continue
+        if _text(fields.get(f"source:{contract_field.field_key}")) is None:
+            issues.append(
+                ContractExecutionIssue(
+                    issue_code="CONTRACT_REQUIRED_FIELD_MISSING",
+                    severity="BLOCKING",
+                    field_key=contract_field.field_key,
+                    message=f"Required contract field '{contract_field.field_key}' is missing from the source row.",
+                )
+            )
+    return tuple(issues)
+
+
+def _document_issues(
+    observations: tuple[ExtractedEvidence, ...],
+    runtime_contract,
+) -> tuple[ContractExecutionIssue, ...]:
+    structure = runtime_contract.declaration.source_structure
+    observed_columns = {
+        key
+        for observation in observations
+        for cell in observation.raw_cells
+        if cell.column_name
+        for key in _column_keys(cell.column_name)
+    }
+    issues: list[ContractExecutionIssue] = []
+    for required_header in structure.required_headers:
+        accepted_names = [required_header]
+        for contract_field in runtime_contract.declaration.fields:
+            declared_names = [contract_field.source_column, contract_field.source_path, *contract_field.composed_from]
+            if any(declared and _names_overlap(declared, required_header) for declared in declared_names):
+                accepted_names.extend(contract_field.aliases)
+        if not any(key in observed_columns for name in accepted_names for key in _column_keys(name)):
+            issues.append(
+                ContractExecutionIssue(
+                    issue_code="CONTRACT_REQUIRED_HEADER_MISSING",
+                    severity="BLOCKING",
+                    field_key=required_header,
+                    message=f"Required source header '{required_header}' was not observed.",
+                )
+            )
+
+    observed_sheets = {
+        observation.source_location.sheet_name
+        for observation in observations
+        if observation.source_location.sheet_name
+    }
+    if structure.expected_sheet_names and observed_sheets:
+        expected_keys = {key for name in structure.expected_sheet_names for key in _column_keys(name)}
+        for sheet in sorted(observed_sheets):
+            if not any(key in expected_keys for key in _column_keys(sheet)):
+                issues.append(
+                    ContractExecutionIssue(
+                        issue_code="CONTRACT_UNEXPECTED_SHEET",
+                        severity="WARNING",
+                        field_key="sheet_name",
+                        message=f"Source sheet '{sheet}' is not declared by the supplier contract.",
+                    )
+                )
+    return tuple(issues)
+
+
+def _names_overlap(left: str, right: str) -> bool:
+    """Match a required header to a more descriptive declared bilingual header."""
+
+    for left_key in _column_keys(left):
+        for right_key in _column_keys(right):
+            if left_key == right_key or left_key in right_key or right_key in left_key:
+                return True
+    return False
+
+
 def _cost_proposal(value: Any, runtime_contract, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    if _matches_null_marker(value, runtime_contract.declaration.pricing.null_cost_markers):
+        return None
     amount = _decimal_or_none(value)
     pricing = runtime_contract.declaration.pricing
     basis = pricing.price_basis
@@ -262,6 +488,13 @@ def _cost_proposal(value: Any, runtime_contract, evidence: dict[str, Any]) -> di
         "price_basis": basis.model_dump(mode="json"),
         "evidence": evidence,
     }
+
+
+def _matches_null_marker(value: Any, markers: list[str]) -> bool:
+    if not isinstance(value, str):
+        return False
+    lowered = value.strip().lower()
+    return any(marker.strip().lower() in lowered for marker in markers if marker.strip())
 
 
 def _packaging_proposal(fields: dict[str, Any], runtime_contract, evidence: dict[str, Any]) -> dict[str, Any] | None:
@@ -397,12 +630,17 @@ _ROLE_TARGETS = {
     "VARIANT": "variant",
     "SPECIES": "species",
     "SEGMENT": "segment",
+    "MBB_TEXT": "bulk_buy_tiers",
+    "EFFECTIVE_DATE": "effective_date",
     "ORDER_INCREMENT": "order_increment_qty",
+    "CONTENT_MEASURE": "content_measure",
+    "ROW_ELIGIBILITY": "row_eligibility",
 }
 
 
 __all__ = [
     "ConformanceOutcome",
     "ConformedRow",
+    "ContractExecutionIssue",
     "conform_observations",
 ]

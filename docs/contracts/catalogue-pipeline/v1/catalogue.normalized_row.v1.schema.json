@@ -4,6 +4,11 @@
       "additionalProperties": false,
       "description": "Raw source strings preserved separately from Rosetta's proposals.",
       "properties": {
+        "additional_fields": {
+          "description": "All contract-declared source values preserved by stable field key.",
+          "title": "Additional Fields",
+          "type": "object"
+        },
         "barcode": {
           "anyOf": [
             {
@@ -43,6 +48,19 @@
           "description": "Category/section text exactly as printed.",
           "title": "Category"
         },
+        "content_measure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Content measure exactly as printed.",
+          "title": "Content Measure"
+        },
         "cost": {
           "anyOf": [
             {
@@ -55,6 +73,19 @@
           "default": null,
           "description": "Cost text exactly as printed, including symbols or notes.",
           "title": "Cost"
+        },
+        "effective_date": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Effective-date text exactly as printed.",
+          "title": "Effective Date"
         },
         "mbb_text": {
           "anyOf": [
@@ -108,6 +139,45 @@
           "description": "Product name/description exactly as printed or translated.",
           "title": "Product Name"
         },
+        "row_eligibility": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source value used to establish row eligibility.",
+          "title": "Row Eligibility"
+        },
+        "rrp": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recommended retail price exactly as printed.",
+          "title": "Rrp"
+        },
+        "segment": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Supplier segment text exactly as printed.",
+          "title": "Segment"
+        },
         "source_row_label": {
           "anyOf": [
             {
@@ -120,6 +190,19 @@
           "default": null,
           "description": "Human-readable source row label when useful.",
           "title": "Source Row Label"
+        },
+        "species": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Species text exactly as printed.",
+          "title": "Species"
         },
         "supplier_sku": {
           "anyOf": [
@@ -597,6 +680,52 @@
       "title": "MinimumSpendCondition",
       "type": "object"
     },
+    "MoneyProposal": {
+      "additionalProperties": false,
+      "description": "Proposed monetary value with optional provenance.",
+      "properties": {
+        "amount": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Monetary amount. JSON serializes as a string.",
+          "title": "Amount"
+        },
+        "currency": {
+          "const": "HKD",
+          "default": "HKD",
+          "description": "Currency. v1 accepts HKD only.",
+          "enum": [
+            "HKD"
+          ],
+          "title": "Currency",
+          "type": "string"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Evidence supporting this monetary proposal."
+        }
+      },
+      "required": [
+        "amount"
+      ],
+      "title": "MoneyProposal",
+      "type": "object"
+    },
     "NormalizedCatalogueFields": {
       "additionalProperties": false,
       "description": "Typed interpretation Rosetta proposes from raw source evidence.",
@@ -649,6 +778,18 @@
           "default": null,
           "description": "Proposed basis-aware supplier cost."
         },
+        "effective_date": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed effective-date text pending date normalization."
+        },
         "mbb_terms": {
           "description": "Proposed MBB terms or tiers.",
           "items": {
@@ -680,6 +821,42 @@
           ],
           "default": null,
           "description": "Proposed product name."
+        },
+        "rrp": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MoneyProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed recommended retail price."
+        },
+        "segment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed supplier segment."
+        },
+        "species": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TextProposal"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Proposed species classification."
         },
         "supplier_sku": {
           "anyOf": [
