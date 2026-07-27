@@ -29,9 +29,7 @@ from dependencies import require_user  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from orchestration.catalogue_flows import catalogue_ingestion_flow  # noqa: E402
 from services import catalogue_evidence_extraction as extraction  # noqa: E402
-from services import catalogue_pipeline_stages as stages  # noqa: E402
 from services.catalogue_submission import CatalogueSubmissionCommand, CatalogueSubmissionService  # noqa: E402
-from schemas.catalogue_pipeline.enums import ReviewStatus  # noqa: E402
 
 
 models.Base.metadata.create_all(bind=database.engine)
@@ -53,6 +51,13 @@ class _Admin:
     username = "read-admin"
     display_name = "Read Admin"
     role = "admin"
+
+
+class _DataEntry:
+    id = 502
+    username = "data-entry"
+    display_name = "Data Entry"
+    role = "data_entry"
 
 
 @pytest.fixture(autouse=True)
@@ -249,24 +254,40 @@ def test_serving_layer_exposes_only_explicit_immutable_publications(client, db, 
         ingestion_run_uuid=str(run)
     ).one()
     candidate_id = UUID(candidate.mastering_candidate_uuid)
-    stages.ReviewDecisionService(db).record_decision(
-        stages.RecordReviewDecisionCommand(
-            mastering_candidate_id=candidate_id,
-            actor_id="review-admin",
-            review_status=ReviewStatus.APPROVED,
-            idempotency_key="read-api-approval",
-        )
+    publish_before_review = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/publish",
+        json={"publication_version": "read-api-v1"},
     )
-    stages.ApprovedCommercialStateService(db).apply_approved_candidate(
-        stages.ApplyApprovedCandidateCommand(mastering_candidate_id=candidate_id)
+    assert publish_before_review.status_code == 409
+
+    review = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/review",
+        headers={"Idempotency-Key": "read-api-approval"},
+        json={"review_status": "APPROVED", "reason": "Verified against source evidence."},
     )
-    stages.ServingPublicationService(db).publish(
-        stages.PublishServingItemCommand(
-            mastering_candidate_id=candidate_id,
-            publication_version="read-api-v1",
-            idempotency_key="read-api-publish",
-        )
+    assert review.status_code == 200
+    assert review.json()["stage"] == "review_decision"
+
+    publish_before_apply = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/publish",
+        json={"publication_version": "read-api-v1"},
     )
+    assert publish_before_apply.status_code == 409
+
+    applied = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/apply",
+        json={},
+    )
+    assert applied.status_code == 200
+    assert applied.json()["stage"] == "commercial_application"
+
+    publication = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/publish",
+        headers={"Idempotency-Key": "read-api-publish"},
+        json={"publication_version": "read-api-v1"},
+    )
+    assert publication.status_code == 200
+    assert publication.json()["stage"] == "serving_publication"
 
     body = client.get(f"/catalogues/ingestions/{run}/serving").json()
     assert body["publication_count"] == 1
@@ -274,14 +295,105 @@ def test_serving_layer_exposes_only_explicit_immutable_publications(client, db, 
     assert body["current_publications"][0]["canonical_sku"] == "10447"
     assert body["publication_history"][0]["is_current"] is True
     assert body["publication_history"][0]["snapshot"] == body["current_publications"][0]
+    actions = {
+        action
+        for (action,) in db.query(models.AuditLog.action)
+        .filter(models.AuditLog.action.like("catalogue.pipeline_%"))
+        .all()
+    }
+    assert actions == {
+        "catalogue.pipeline_candidate_review",
+        "catalogue.pipeline_candidate_apply",
+        "catalogue.pipeline_serving_publish",
+    }
+
+
+def test_validation_resolution_is_run_scoped_and_audited(client, db, monkeypatch):
+    run = _run_pipeline(db, monkeypatch)
+    normalized = db.query(models.CatalogueNormalizedRow).filter_by(
+        ingestion_run_uuid=str(run)
+    ).one()
+    issue_id = UUID("77777777-7777-4777-8777-777777777777")
+    db.add(
+        models.CatalogueValidationIssue(
+            validation_issue_uuid=str(issue_id),
+            contract_version="catalogue.validation_issue.v1",
+            ingestion_run_uuid=str(run),
+            catalogue_item_uuid=normalized.catalogue_item_uuid,
+            stage="STAGING",
+            issue_code="HITL_CONFIRMATION_REQUIRED",
+            severity="WARNING",
+            message="Reviewer confirmation is required.",
+            created_at="2026-07-27T00:00:00+00:00",
+            resolution_status="OPEN",
+            publish_blocking=1,
+        )
+    )
+    db.commit()
+
+    wrong_run = "99999999-9999-4999-8999-999999999999"
+    assert client.post(
+        f"/catalogues/ingestions/{wrong_run}/validation-issues/{issue_id}/resolve",
+        json={"resolution_status": "CONFIRMED"},
+    ).status_code == 404
+
+    response = client.post(
+        f"/catalogues/ingestions/{run}/validation-issues/{issue_id}/resolve",
+        headers={"Idempotency-Key": "confirm-warning"},
+        json={
+            "resolution_status": "CONFIRMED",
+            "resolution_note": "Checked against the supplier document.",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["stage"] == "validation_resolution"
+    issue = db.query(models.CatalogueValidationIssue).filter_by(
+        validation_issue_uuid=str(issue_id)
+    ).one()
+    assert issue.resolution_status == "CONFIRMED"
+    assert issue.publish_blocking == 0
+    assert issue.resolver_id == _Admin.username
+    assert db.query(models.CatalogueReviewDecision).filter_by(
+        validation_issue_uuid=str(issue_id)
+    ).count() == 1
+    assert db.query(models.AuditLog).filter_by(
+        action="catalogue.pipeline_validation_resolve",
+        entity_id=str(issue_id),
+    ).count() == 1
 
 
 def test_read_endpoints_require_authorization(client, db, monkeypatch):
     run = _run_pipeline(db, monkeypatch)
+    candidate_id = db.query(models.CatalogueMasteringCandidate.mastering_candidate_uuid).filter_by(
+        ingestion_run_uuid=str(run)
+    ).scalar()
     main.app.dependency_overrides.pop(require_user, None)  # drop the admin override
     try:
         for layer in ("raw", "staging", "intermediate", "serving"):
             assert client.get(f"/catalogues/ingestions/{run}/{layer}").status_code in {401, 403}
+        assert client.post(
+            f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/review",
+            json={"review_status": "REJECTED"},
+        ).status_code in {401, 403}
+    finally:
+        main.app.dependency_overrides[require_user] = lambda: _Admin()
+
+
+def test_data_entry_cannot_apply_or_publish_commercial_state(client, db, monkeypatch):
+    run = _run_pipeline(db, monkeypatch)
+    candidate_id = db.query(models.CatalogueMasteringCandidate.mastering_candidate_uuid).filter_by(
+        ingestion_run_uuid=str(run)
+    ).scalar()
+    main.app.dependency_overrides[require_user] = lambda: _DataEntry()
+    try:
+        assert client.post(
+            f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/apply",
+            json={},
+        ).status_code == 403
+        assert client.post(
+            f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/publish",
+            json={"publication_version": "forbidden"},
+        ).status_code == 403
     finally:
         main.app.dependency_overrides[require_user] = lambda: _Admin()
 
