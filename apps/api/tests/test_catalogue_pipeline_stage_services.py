@@ -199,13 +199,22 @@ def _normalized_fields(raw_id: UUID, *, include_cost=True, include_packaging=Tru
     return proposed
 
 
-def _build_claim(db, raw_id: UUID, *, include_cost=True, include_packaging=True, key="stage-row-1"):
+def _build_claim(
+    db,
+    raw_id: UUID,
+    *,
+    include_cost=True,
+    include_packaging=True,
+    key="stage-row-1",
+    metadata=None,
+):
     return stages.NormalizedRowService(db).build_item(
         stages.BuildNormalizedRowCommand(
             raw_observation_ids=(raw_id,),
             raw_fields=_raw_fields(),
             normalized_fields=_normalized_fields(raw_id, include_cost=include_cost, include_packaging=include_packaging),
             idempotency_key=key,
+            metadata=metadata or {},
         )
     ).output_ids[0]
 
@@ -379,6 +388,74 @@ def test_validation_dedupes_resolves_and_blocks_mastering_until_resolved(db):
     candidate_id = _prepare_candidate(db, staging_id)
     assert candidate_id
     assert db.query(models.CatalogueReviewDecision).filter_by(validation_issue_uuid=blocking.validation_issue_uuid).count() == 1
+
+
+def test_contract_execution_issues_are_durable_and_resolution_survives_replay(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(
+        db,
+        raw_id,
+        metadata={
+            "contract_execution_issues": [
+                {
+                    "issue_code": "CONTRACT_MBB_REQUIRES_REVIEW",
+                    "severity": "WARNING",
+                    "message": "Promotion text lacks a proven scope.",
+                    "field_key": "mbb_text",
+                }
+            ]
+        },
+    )
+    validation = stages.CatalogueValidationService(db)
+
+    first = validation.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
+    second = validation.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
+
+    assert first.metrics.created_count == 1
+    assert second.metrics.reused_count == 1
+    issue_row = db.query(models.CatalogueValidationIssue).one()
+    issue = UUID(issue_row.validation_issue_uuid)
+    assert issue_row.issue_code == "CONTRACT_MBB_REQUIRES_REVIEW"
+    assert issue_row.field_path == "/normalized_fields/mbb_terms"
+    assert issue_row.raw_observation_uuid == str(raw_id)
+
+    validation.resolve_issue(
+        stages.ResolveValidationIssueCommand(
+            validation_issue_id=issue,
+            resolver_id="bizops@example.com",
+            resolution_status=IssueResolutionStatus.CONFIRMED,
+            resolution_note="Promotion scope was checked against the supplier document.",
+            idempotency_key="confirm-mbb-scope",
+        )
+    )
+    replay = validation.evaluate_claim(stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id))
+
+    assert replay.metrics.reused_count == 1
+    assert replay.metrics.blocking_issue_count == 0
+    db.refresh(issue_row)
+    assert issue_row.resolution_status == IssueResolutionStatus.CONFIRMED.value
+    assert issue_row.resolver_id == "bizops@example.com"
+    assert db.query(models.CatalogueValidationIssue).count() == 1
+
+
+def test_malformed_contract_issue_metadata_fails_closed(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(
+        db,
+        raw_id,
+        metadata={"contract_execution_issues": [{"severity": "NOT_A_SEVERITY"}]},
+    )
+
+    result = stages.CatalogueValidationService(db).evaluate_claim(
+        stages.EvaluateNormalizedRowCommand(catalogue_item_id=staging_id)
+    )
+
+    issue = db.query(models.CatalogueValidationIssue).one()
+    assert result.metrics.blocking_issue_count == 1
+    assert issue.issue_code == "CONTRACT_ISSUE_METADATA_INVALID"
+    assert issue.publish_blocking == 1
 
 
 def test_stage_services_apply_approved_candidate_and_publish_idempotently(db):

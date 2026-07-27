@@ -152,7 +152,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert flow_result.rows_extracted == 2
     assert flow_result.raw_observations_created == 2
     assert flow_result.staging_items_created == 2
-    assert flow_result.validation_issues_created == 1
+    assert flow_result.validation_issues_created == 4
     assert flow_result.mastering_candidates_created == 1
     assert flow_result.human_review_required is True
 
@@ -194,7 +194,14 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     invalid_staging_contract = persistence.normalized_row_to_contract(invalid_staging)
     assert invalid_staging_contract.raw_fields.supplier_sku == "Q-1"
 
-    issue = db.query(models.CatalogueValidationIssue).one()
+    issues = db.query(models.CatalogueValidationIssue).all()
+    assert {item.issue_code for item in issues} == {
+        "CONTRACT_REQUIRED_FIELD_MISSING",
+        "CONTRACT_COST_UNPARSEABLE",
+        "STAGING_COST_BASIS_UNRESOLVED",
+    }
+    assert len([item for item in issues if item.issue_code == "CONTRACT_REQUIRED_FIELD_MISSING"]) == 2
+    issue = next(item for item in issues if item.issue_code == "STAGING_COST_BASIS_UNRESOLVED")
     issue_contract = persistence.validation_issue_to_contract(issue)
     assert issue.issue_code == "STAGING_COST_BASIS_UNRESOLVED"
     assert issue.publish_blocking == 1
@@ -319,7 +326,7 @@ def test_cis104_vertical_slice_submission_orchestration_approval_publication_and
     assert serving_contract.contract_version == "catalogue.serving_item.v1"
     assert serving_contract.review_status == ReviewStatus.APPROVED
     assert serving_contract.canonical_sku == "10447"
-    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken 82g"
+    assert serving_contract.product_variant_name == "Hill's Healthy Cuisine Chicken Adult 82g"
     assert serving_contract.supplier_offering.supplier_sku == "10447"
     assert serving_contract.current_approved_cost.amount == Decimal("13.10")
     assert serving_contract.current_approved_cost.currency == "HKD"
@@ -380,6 +387,7 @@ _VISION_ROWS = [
     {
         "Product Code / 產品編號": "10447",
         "Product Range / 產品系列": "Hill's Healthy Cuisine Chicken",
+        "Life Stage / 生命階段": "Adult",
         "Product Description / 產品名稱": "82g",
         "Size / 重量": "82g",
         "Gross Wholesale Price / 每箱·罐": "13.10",
