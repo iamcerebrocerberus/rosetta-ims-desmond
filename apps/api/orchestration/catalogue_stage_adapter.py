@@ -66,7 +66,7 @@ def evidence_from_persisted_observation(contract: ExtractedEvidenceV1) -> Extrac
 
 
 def normalized_row_command_from_conformance(item: ConformedRow) -> stages.BuildNormalizedRowCommand:
-    """Create a normalized-row (Staging output) command from one conformed row.
+    """Create an Intermediate normalized-claim command from one conformed row.
 
     Rows that could not be conformed deterministically (no structured cells to
     map through the contract) are forced to REQUIRED review — an empty row must

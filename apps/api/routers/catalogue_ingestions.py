@@ -202,9 +202,11 @@ def get_staging_layer(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_capability("catalogue_onboard")),
 ) -> dict[str, Any]:
-    """STAGING layer (steps 3-4): verbatim, source-located extracted evidence
-    plus the contract-conformed normalized rows deterministically mapped from
-    it. Evidence is the audit record; normalized rows are the staging output."""
+    """STAGING layer (steps 3-4): verbatim, source-located extracted evidence.
+
+    Applying the supplier contract changes evidence into an interpreted
+    proposal, so normalized rows belong to Intermediate rather than Staging.
+    """
     _load_run_or_404(db, run_uuid)
     run = str(run_uuid)
     evidence = [
@@ -214,20 +216,11 @@ def get_staging_layer(
         .order_by(models.CatalogueExtractedEvidence.id)
         .all()
     ]
-    normalized_rows = [
-        persistence.normalized_row_to_contract(r).model_dump(mode="json")
-        for r in db.query(models.CatalogueNormalizedRow)
-        .filter_by(ingestion_run_uuid=run)
-        .order_by(models.CatalogueNormalizedRow.id)
-        .all()
-    ]
     return {
         "ingestion_run_id": run,
         "layer": "staging",
         "evidence_count": len(evidence),
         "evidence": evidence,
-        "normalized_row_count": len(normalized_rows),
-        "normalized_rows": normalized_rows,
     }
 
 
@@ -237,11 +230,17 @@ def get_intermediate_layer(
     db: Session = Depends(database.get_db),
     _user: models.User = Depends(require_capability("catalogue_onboard")),
 ) -> dict[str, Any]:
-    """INTERMEDIATE layer (steps 7-8): business interpretation of the normalized
-    rows — validation issues and prepared mastering candidates awaiting review.
-    (The normalized rows themselves are Staging output; see /staging.)"""
+    """INTERMEDIATE layer (steps 5-9): contract-conformed normalized claims,
+    validation issues and mastering candidates awaiting human review."""
     _load_run_or_404(db, run_uuid)
     run_filter = {"ingestion_run_uuid": str(run_uuid)}
+    normalized_rows = [
+        persistence.normalized_row_to_contract(r).model_dump(mode="json")
+        for r in db.query(models.CatalogueNormalizedRow)
+        .filter_by(**run_filter)
+        .order_by(models.CatalogueNormalizedRow.id)
+        .all()
+    ]
     issues = [
         persistence.validation_issue_to_contract(r).model_dump(mode="json")
         for r in db.query(models.CatalogueValidationIssue).filter_by(**run_filter).order_by(models.CatalogueValidationIssue.id).all()
@@ -253,6 +252,7 @@ def get_intermediate_layer(
     return {
         "ingestion_run_id": str(run_uuid),
         "layer": "intermediate",
+        "normalized_rows": normalized_rows,
         "validation_issues": issues,
         "mastering_candidates": candidates,
     }

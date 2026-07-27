@@ -17,8 +17,12 @@ import models
 import database
 from routers import include_routers
 
-# Schema comes entirely from the models — build fresh, no migrations.
+# Preserve the known pipeline terminology rename before create_all can create
+# competing empty tables. Then create missing tables and additively reconcile
+# existing ones. Destructive/data-dependent changes never run implicitly.
+database.run_pre_create_migrations(database.engine)
 models.Base.metadata.create_all(bind=database.engine)
+database.run_migrations(database.engine)
 database.seed_default_users(database.engine)
 database.seed_category_rules(database.engine)
 

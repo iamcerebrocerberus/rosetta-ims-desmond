@@ -122,18 +122,26 @@ docker compose logs -f catalogue-worker
 See [`SCHEMA.md`](./SCHEMA.md) for the full ER diagram and table-by-table notes.
 
 ### Migrations
-Migrations live in `database.py` → `run_migrations()`. They run automatically on every app start via `main.py`:
+Additive schema reconciliation lives in `database.py` → `run_migrations()`.
+It runs automatically on every app start via `main.py`:
 
 ```python
 models.Base.metadata.create_all(bind=database.engine)
 database.run_migrations(database.engine)
 ```
 
-The pattern is intentionally simple — idempotent `ALTER TABLE ADD COLUMN` statements wrapped in `try/except` (SQLite throws when a column already exists; we ignore). For new legacy-runtime tables, use `CREATE TABLE IF NOT EXISTS`. New v2 catalogue persistence tables live under `apps/api/v2/models/` and are registered by `import v2.models`; `run_migrations()` imports that package for scripts/tests that do not import `main.py`.
+The reconciler is idempotent and additive: it creates model-declared columns
+and indexes that are missing from existing tables. It never drops, truncates,
+renames, or rebuilds a table. If a populated table needs a required column
+without a safe server default, startup stops with an actionable error rather
+than inventing a backfill. Structural or destructive changes require an
+explicit, reviewed migration outside application startup.
 
 **To add a new column or table:**
 1. Update the SQLAlchemy model in `models.py` for current v1 runtime tables, or `apps/api/v2/models/` for additive v2 foundations
-2. Add the corresponding idempotent migration/backfill step to `run_migrations()` in `database.py`
+2. For a nullable/defaulted additive field, `run_migrations()` will reconcile
+   it automatically. For required fields or structural changes, add an
+   explicit reviewed migration and backfill.
 3. Restart the API — migration runs on next startup
 
 For complex migrations (renames, data backfills), promote to [Alembic](https://alembic.sqlalchemy.org/). Not needed yet.

@@ -24,7 +24,7 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
 
-# create_all + run_migrations on startup build the schema and seed the default
+# create_all + additive run_migrations on startup build/reconcile the schema and seed the default
 # admin on a fresh DB, so an empty /data/ims.db is fine for first boot. Worker
 # count is overridable via WEB_CONCURRENCY (default 1 — memory-safe; raise on a
 # bigger droplet).

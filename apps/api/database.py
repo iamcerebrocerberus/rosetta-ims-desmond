@@ -1,8 +1,9 @@
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
-from sqlalchemy import create_engine, text, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy.schema import CreateColumn
 
 SQLALCHEMY_DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///./ims.db")
 _is_sqlite = SQLALCHEMY_DATABASE_URL.startswith("sqlite")
@@ -52,17 +53,130 @@ def get_db():
         db.close()
 
 
-# ── Catalogue pipeline: build fresh, drop superseded tables ──────────────────
-# The catalogue pipeline is built fresh, not data-migrated. Tables superseded by
-# the timeline-consistent rename (raw_observation -> extracted_evidence,
-# staging_item -> normalized_row) are DROPPED before create_all, which then
-# builds the current schema. No rename, no data preservation, no migration
-# history for these tables — an explicit project choice. Guarded by existence;
-# a no-op on fresh databases. Link table first so any FK dependency is gone
-# before its referenced tables are dropped.
-# The database schema is defined entirely by the SQLAlchemy models
-# (Base.metadata.create_all). The catalogue pipeline and legacy tables are built
-# fresh, not incrementally migrated — no ALTER/rename migration history is kept.
+# ── Additive schema upgrades ─────────────────────────────────────────────────
+
+
+class UnsafeSchemaMigration(RuntimeError):
+    """Raised when a missing column cannot be added without a data decision."""
+
+
+_CATALOGUE_TABLE_RENAMES = (
+    ("catalogue_raw_observations", "catalogue_extracted_evidence"),
+    ("catalogue_staging_items", "catalogue_normalized_rows"),
+    ("catalogue_staging_raw_observations", "catalogue_normalized_row_evidence"),
+)
+
+
+def run_pre_create_migrations(bind) -> None:
+    """Preserve data across the known pipeline terminology table rename.
+
+    This narrow migration must run before ``create_all`` can create the target
+    tables. A source table is renamed only when its target does not exist. If
+    both exist, the database may contain two histories and startup stops for an
+    operator-directed merge instead of selecting or deleting either one.
+    """
+
+    existing = set(inspect(bind).get_table_names())
+    preparer = bind.dialect.identifier_preparer
+    for old_name, new_name in _CATALOGUE_TABLE_RENAMES:
+        if old_name in existing and new_name in existing:
+            raise UnsafeSchemaMigration(
+                f"Both superseded table {old_name} and current table {new_name} exist; "
+                "merge them with an explicit migration before startup"
+            )
+
+    with bind.begin() as connection:
+        for old_name, new_name in _CATALOGUE_TABLE_RENAMES:
+            if old_name not in existing:
+                continue
+            connection.execute(
+                text(
+                    f"ALTER TABLE {preparer.quote(old_name)} "
+                    f"RENAME TO {preparer.quote(new_name)}"
+                )
+            )
+            existing.remove(old_name)
+            existing.add(new_name)
+
+        # The interpreted payload was renamed with its table. This is a
+        # terminology-only migration; values are preserved byte-for-byte.
+        if "catalogue_normalized_rows" in existing:
+            columns = {
+                column["name"]
+                for column in inspect(connection).get_columns("catalogue_normalized_rows")
+            }
+            if "proposed_fields_json" in columns and "normalized_fields_json" in columns:
+                raise UnsafeSchemaMigration(
+                    "Both proposed_fields_json and normalized_fields_json exist on "
+                    "catalogue_normalized_rows; an explicit merge is required"
+                )
+            if "proposed_fields_json" in columns:
+                connection.execute(
+                    text(
+                        "ALTER TABLE catalogue_normalized_rows "
+                        "RENAME COLUMN proposed_fields_json TO normalized_fields_json"
+                    )
+                )
+
+
+def run_migrations(bind) -> None:
+    """Bring existing tables forward without deleting or rewriting user data.
+
+    ``create_all`` creates new tables but deliberately does not alter tables
+    that already exist. This additive reconciler fills that gap for columns and
+    indexes represented by the current SQLAlchemy metadata. It never drops,
+    renames, truncates, or rebuilds a table. A missing required column without
+    a server default is safe on an empty table; on a populated table it stops
+    startup with an actionable error rather than guessing a backfill.
+
+    Structural/destructive changes must be implemented as explicit, reviewed
+    migrations outside application startup.
+    """
+
+    # Callers such as tests and maintenance scripts may import database without
+    # importing the model registry first.
+    import models  # noqa: F401
+
+    inspector = inspect(bind)
+    existing_tables = set(inspector.get_table_names())
+    preparer = bind.dialect.identifier_preparer
+
+    with bind.begin() as connection:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            existing_columns = {column["name"] for column in inspector.get_columns(table.name)}
+            table_has_rows: bool | None = None
+            for column in table.columns:
+                if column.name in existing_columns:
+                    continue
+                if not column.nullable and column.server_default is None:
+                    if table_has_rows is None:
+                        table_has_rows = connection.execute(
+                            text(f"SELECT 1 FROM {preparer.quote(table.name)} LIMIT 1")
+                        ).first() is not None
+                    if table_has_rows:
+                        raise UnsafeSchemaMigration(
+                            f"Cannot add required column {table.name}.{column.name} "
+                            "to a populated table without an explicit backfill"
+                        )
+                definition = str(CreateColumn(column).compile(dialect=bind.dialect))
+                connection.execute(
+                    text(
+                        f"ALTER TABLE {preparer.quote(table.name)} "
+                        f"ADD COLUMN {definition}"
+                    )
+                )
+
+    # Index creation is idempotent and additive. Run it after all missing
+    # columns exist so composite indexes can be created safely.
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        for index in table.indexes:
+            index.create(bind=bind, checkfirst=True)
+
+
 _CATEGORY_RULE_SEED = [
     ("Medicine", 0.70, "5"), ("Preventative", 0.40, "5"), ("Supplement", 0.40, "5"),
     ("Shampoo", 0.40, "4"), ("Food", 0.35, "1"), ("Not-For-Sale", 0.00, "6"),
