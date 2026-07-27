@@ -121,6 +121,8 @@ def test_contract_aliases_are_executable_and_declared_values_are_preserved():
     assert row.raw_fields["additional_fields"]["cost"] == "42.50"
     assert row.normalized_fields["rrp"]["amount"] == "55.00"
     assert row.normalized_fields["effective_date"]["value"] == "2026-07-01"
+    assert row.normalized_fields["mbb_terms"] == []
+    assert "CONTRACT_MBB_REQUIRES_REVIEW" in {issue.issue_code for issue in row.issues}
 
 
 def test_missing_required_row_field_is_explicit_and_blocking():
@@ -173,3 +175,85 @@ def test_declared_validation_rule_runs_in_the_authoritative_conformance_path():
     row = conform_observations((_observation(invalid_price_row),), (uuid4(),), hills).items[0]
 
     assert "HILLS_COST_NOT_BELOW_RRP" in {issue.issue_code for issue in row.issues}
+
+
+def test_hills_packaging_normalization_keeps_content_separate_from_ordering():
+    hills = runtime.load_contract(14)
+    row_cells = {
+        "Product Code 產品編號": "607665",
+        "Product Range 產品系列": "Cancer",
+        "Life Stage 生命階段": "ONC",
+        "Product Description 產品名稱": "Chicken Stew",
+        "Size 重量": "24/2.9 oz",
+        "Gross Wholesale Price 折扣前批發價（每包／罐）": "25.20",
+        "Order Multiple 訂貨單位": "24",
+    }
+
+    row = conform_observations((_observation(row_cells),), (uuid4(),), hills).items[0]
+    packaging = row.normalized_fields["packaging"]
+
+    assert packaging["price_basis"]["code"] == "UNIT"
+    assert packaging["content_amount"] == "2.9"
+    assert packaging["content_uom"]["code"] == "OZ"
+    assert packaging["order_increment"] == {"amount": "24", "uom": {"code": "UNIT", "label": None}}
+    assert "sellable_units_per_purchase_unit" not in packaging
+    assert "purchase_uom" not in packaging
+    assert "break_pack_allowed" not in packaging
+
+
+def test_alfamedic_pack_count_is_order_increment_and_by_quote_is_reviewed():
+    alfamedic = runtime.load_contract(1)
+    row_cells = {
+        "Order Code": "MS-8",
+        "Product Name": "Image Processor",
+        "Brand": "Skyla",
+        "Packing / Unit": "10 pcs/ box",
+        "Price/ Unit (HKD)": "By Quote",
+    }
+
+    row = conform_observations((_observation(row_cells),), (uuid4(),), alfamedic).items[0]
+    packaging = row.normalized_fields["packaging"]
+
+    assert "cost" not in row.normalized_fields
+    assert packaging["price_basis"]["code"] == "PIECE"
+    assert packaging["order_increment"]["amount"] == "10"
+    assert "sellable_units_per_purchase_unit" not in packaging
+    assert "CONTRACT_NULL_COST_REQUIRES_REVIEW" in {issue.issue_code for issue in row.issues}
+
+
+def test_unparseable_effective_date_stays_raw_and_requires_review():
+    declaration = get_supplier_source_contract("kangaroo.mixed_price_catalogue.v1", "v1").declaration
+    contract = runtime.SupplierSourceRuntimeContract(declaration=declaration)
+    row_cells = {
+        "SKU#": "KPN-11",
+        "Product Description": "Duck bites",
+        "Price Per Unit": "42.50",
+        "Retail Price Per Unit": "55.00",
+        "section_header": "effective next promotion",
+    }
+
+    row = conform_observations((_observation(row_cells),), (uuid4(),), contract).items[0]
+
+    assert row.raw_fields["effective_date"] == "effective next promotion"
+    assert "effective_date" not in row.normalized_fields
+    assert "CONTRACT_EFFECTIVE_DATE_UNPARSEABLE" in {issue.issue_code for issue in row.issues}
+
+
+def test_unresolved_price_basis_never_produces_a_cost_proposal():
+    declaration = get_supplier_source_contract("kangaroo.earthz_pet_price_sheet.v1", "v1").declaration
+    contract = runtime.SupplierSourceRuntimeContract(declaration=declaration)
+    row_cells = {
+        "sku#": "EARTHZ-35",
+        "visual product heading": "Earthz supplement",
+        "visual size and pack-count text": "5 bottles x 35ml",
+        "批發價": "100.00",
+        "建議零售價": "130.00",
+    }
+
+    row = conform_observations((_observation(row_cells),), (uuid4(),), contract).items[0]
+
+    assert row.raw_fields["cost"] == "100.00"
+    assert "cost" not in row.normalized_fields
+    assert row.normalized_fields["packaging"]["content_amount"] == "35"
+    assert row.normalized_fields["packaging"]["content_uom"]["code"] == "ML"
+    assert "CONTRACT_PRICE_BASIS_UNRESOLVED" in {issue.issue_code for issue in row.issues}

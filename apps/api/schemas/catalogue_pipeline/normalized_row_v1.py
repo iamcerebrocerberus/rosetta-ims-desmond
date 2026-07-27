@@ -11,6 +11,7 @@ from pydantic import Field, model_validator
 from .base import ContractModel, register_contract
 from .common import (
     CostProposal,
+    DateProposal,
     JsonObject,
     MbbTerm,
     MoneyProposal,
@@ -64,7 +65,7 @@ class NormalizedCatalogueFields(ContractModel):
     packaging: PackagingProposal | None = Field(None, description="Proposed packaging configuration.")
     species: TextProposal | None = Field(None, description="Proposed species classification.")
     segment: TextProposal | None = Field(None, description="Proposed supplier segment.")
-    effective_date: TextProposal | None = Field(None, description="Proposed effective-date text pending date normalization.")
+    effective_date: DateProposal | None = Field(None, description="Proposed supplier effective date.")
     mbb_terms: list[MbbTerm] = Field(default_factory=list, description="Proposed MBB terms or tiers.")
 
 
