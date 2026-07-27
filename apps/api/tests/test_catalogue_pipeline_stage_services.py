@@ -550,6 +550,49 @@ def test_stage_services_apply_approved_candidate_and_publish_idempotently(db):
     assert serving.is_current == 1
 
 
+def test_unmatched_canonical_product_cannot_be_approved_or_applied(db):
+    _seed_context(db)
+    raw_id = _capture_raw(db)
+    staging_id = _build_claim(db, raw_id)
+    candidate_id = stages.MasteringService(db).prepare_candidate(
+        stages.PrepareMasteringCandidateCommand(
+            catalogue_item_id=staging_id,
+            idempotency_key="unmatched-product",
+            supplier_product_resolution={
+                "state": "PROPOSED_CREATE",
+                "supplier_id": 14,
+                "supplier_product_id": "supplier:14:offer:UNMATCHED-1",
+                "supplier_sku": "UNMATCHED-1",
+            },
+            product_variant_resolution={
+                "state": "PROPOSED_CREATE",
+                "proposed_name": "Unmatched product",
+                "product_variant_name": "Unmatched product",
+            },
+        )
+    ).output_ids[0]
+
+    with pytest.raises(stages.AmbiguousProductVariant, match="creation is not implemented"):
+        stages.ReviewDecisionService(db).record_decision(
+            stages.RecordReviewDecisionCommand(
+                mastering_candidate_id=candidate_id,
+                actor_id="reviewer@example.com",
+                review_status=ReviewStatus.APPROVED,
+                reason="Should not be approvable without canonical identity.",
+                idempotency_key="reject-unmatched-approval",
+            )
+        )
+
+    candidate = db.query(models.CatalogueMasteringCandidate).filter_by(
+        mastering_candidate_uuid=str(candidate_id)
+    ).one()
+    assert candidate.review_status == ReviewStatus.PENDING_REVIEW.value
+    assert db.query(models.CatalogueReviewDecision).count() == 0
+    assert db.query(models.CatalogueSupplierProduct).count() == 0
+    assert db.query(models.CatalogueSupplierPrice).count() == 0
+    assert db.query(models.CataloguePackagingConfiguration).count() == 0
+
+
 def test_review_rejects_stale_candidate_revision_and_staging_key_conflicts(db):
     _seed_context(db)
     raw_id = _capture_raw(db)

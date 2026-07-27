@@ -250,6 +250,11 @@ def test_product_variant_validates_without_product_family():
     assert candidate.product_family_resolution is None
     assert candidate.review_status == "APPROVED_WITH_OVERRIDE"
 
+    data = _load(FIXTURE_ROOT / "valid" / "mastering_candidate_no_family.json")
+    data["mbb_resolution"]["selected_term"]["selected_term_id"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    with pytest.raises(ValidationError, match="selected MBB term must reference"):
+        MasteringCandidateV1.model_validate(data)
+
 
 def test_serving_publication_guard_and_required_cost_per_sellable_unit():
     serving = ServingItemV1.model_validate(_load(FIXTURE_ROOT / "valid" / "serving_item_inventory.json"))
