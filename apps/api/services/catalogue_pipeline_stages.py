@@ -657,6 +657,10 @@ class ReviewDecisionService(_TransactionalService):
             )
         if command.review_status in {ReviewStatus.APPROVED, ReviewStatus.APPROVED_WITH_OVERRIDE}:
             _raise_if_open_blocking(self.db, catalogue_item_uuid=candidate.catalogue_item_uuid)
+            _assert_candidate_applicable(
+                self.db,
+                persistence.mastering_candidate_to_contract(candidate),
+            )
 
         decided_at = command.decided_at or _now()
         decision_id = _stable_uuid(
@@ -733,6 +737,7 @@ class ApprovedCommercialStateService(_TransactionalService):
             )
         _raise_if_open_blocking(self.db, catalogue_item_uuid=candidate_row.catalogue_item_uuid)
         candidate = persistence.mastering_candidate_to_contract(candidate_row)
+        _assert_candidate_applicable(self.db, candidate)
         applied_at = command.applied_at or _now()
 
         supplier_product_key = _candidate_supplier_product_key(candidate)
@@ -1371,6 +1376,45 @@ def _candidate_supplier_product_key(candidate: MasteringCandidateV1) -> str:
     if str(identity).startswith("supplier:"):
         return str(identity)
     return f"supplier:{supplier_id}:offer:{identity}"
+
+
+def _assert_candidate_applicable(db: Session, candidate: MasteringCandidateV1) -> None:
+    supplier = candidate.supplier_product_resolution
+    if supplier.state == ResolutionState.UNRESOLVED or supplier.supplier_id is None:
+        raise AmbiguousSupplierOffer("Candidate requires a resolved supplier identity before approval")
+    if not (supplier.supplier_sku or supplier.barcode or supplier.supplier_product_id):
+        raise AmbiguousSupplierOffer("Candidate requires a supplier SKU, barcode, or supplier-product identity")
+
+    variant = candidate.product_variant_resolution
+    if variant.state not in {ResolutionState.PROPOSED_MATCH, ResolutionState.CONFIRMED_MATCH}:
+        raise AmbiguousProductVariant(
+            "Candidate must match an existing canonical product before approval; canonical product creation is not implemented"
+        )
+    product = None
+    if variant.canonical_sku:
+        product = db.query(models.Product).filter_by(sku_code=variant.canonical_sku).first()
+    elif variant.product_variant_id:
+        product = db.query(models.Product).filter_by(sku_code=variant.product_variant_id).first()
+        if product is None and str(variant.product_variant_id).isdigit():
+            product = db.get(models.Product, int(variant.product_variant_id))
+    if product is None:
+        raise AmbiguousProductVariant("Candidate canonical product match does not exist")
+
+    packaging = candidate.packaging_resolution
+    if packaging.state == ResolutionState.UNRESOLVED or packaging.packaging is None:
+        raise InvalidStageTransition("Candidate requires resolved packaging before approval")
+    price = candidate.supplier_price_resolution
+    if price.state == ResolutionState.UNRESOLVED or price.current_cost is None:
+        raise InvalidStageTransition("Candidate requires a resolved supplier cost before approval")
+    packaging_basis = packaging.packaging.price_basis
+    price_basis = price.current_cost.price_basis
+    if (
+        packaging_basis is not None
+        and packaging_basis.code is not None
+        and price_basis.code is not None
+        and packaging_basis.code != price_basis.code
+    ):
+        raise InvalidStageTransition("Candidate packaging price basis conflicts with supplier cost price basis")
 
 
 def _serving_contract_from_state(
