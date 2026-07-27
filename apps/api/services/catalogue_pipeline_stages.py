@@ -362,15 +362,18 @@ class CatalogueValidationService(_TransactionalService):
             if existing is None:
                 persistence.persist_validation_issue(self.db, issue)
                 created += 1
+                current_issue = issue
             else:
+                existing_contract = persistence.validation_issue_to_contract(existing)
                 _assert_same_material(
-                    _issue_material(persistence.validation_issue_to_contract(existing)),
+                    _issue_material(existing_contract),
                     _issue_material(issue),
                     f"Validation Issue {issue.validation_issue_id}",
                 )
                 reused += 1
-            warning_count += 1 if issue.severity == IssueSeverity.WARNING else 0
-            blocking_count += 1 if issue.publish_blocking else 0
+                current_issue = existing_contract
+            warning_count += 1 if current_issue.severity == IssueSeverity.WARNING else 0
+            blocking_count += 1 if current_issue.publish_blocking else 0
             issue_ids.append(issue.validation_issue_id)
 
         if issue_specs:
@@ -1624,6 +1627,14 @@ def _scrub_evidence_confidence(value: Any) -> Any:
 def _issue_material(contract: ValidationIssueV1) -> dict[str, Any]:
     payload = contract.model_dump(mode="json")
     payload.pop("created_at", None)
+    for key in (
+        "resolution_status",
+        "resolver_id",
+        "resolved_at",
+        "resolution_note",
+        "publish_blocking",
+    ):
+        payload.pop(key, None)
     return payload
 
 
