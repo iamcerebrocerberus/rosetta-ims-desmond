@@ -43,6 +43,8 @@ class UnitCode(str, Enum):
     STRIP = "STRIP"
     KG = "KG"
     G = "G"
+    OZ = "OZ"
+    LB = "LB"
     L = "L"
     ML = "ML"
     OTHER = "OTHER"
@@ -124,4 +126,3 @@ class ProfileMatchStrategy(str, Enum):
     BARCODE = "BARCODE"
     DESCRIPTION = "DESCRIPTION"
     COMPOSITE = "COMPOSITE"
-

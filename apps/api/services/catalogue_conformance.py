@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
@@ -114,6 +115,7 @@ def conform_observations(
                 document_issues
                 + _required_field_issues(fields, runtime_contract)
                 + _validation_rule_issues(fields, runtime_contract)
+                + _normalization_issues(fields, runtime_contract)
             )
             items.append(
                 _item_from_fields(
@@ -316,11 +318,13 @@ def _item_from_fields(
         ("variant", "variant"),
         ("species", "species"),
         ("segment", "segment"),
-        ("effective_date", "effective_date"),
     ):
         value = _text(fields.get(source_key))
         if value is not None:
             normalized[normalized_key] = {"value": value, "evidence": evidence}
+    effective_date = _date_proposal(fields.get("effective_date"), evidence)
+    if effective_date is not None:
+        normalized["effective_date"] = effective_date
 
     cost = _cost_proposal(fields.get("cost_price"), runtime_contract, evidence)
     if cost is not None:
@@ -354,6 +358,79 @@ def _money_proposal(value: Any, runtime_contract, evidence: dict[str, Any]) -> d
     }
 
 
+def _date_proposal(value: Any, evidence: dict[str, Any]) -> dict[str, Any] | None:
+    parsed = _date_or_none(value)
+    if parsed is None:
+        return None
+    return {"value": parsed.isoformat(), "evidence": evidence}
+
+
+def _normalization_issues(
+    fields: dict[str, Any],
+    runtime_contract,
+) -> tuple[ContractExecutionIssue, ...]:
+    declaration = runtime_contract.declaration
+    issues: list[ContractExecutionIssue] = []
+    raw_cost = fields.get("cost_price")
+    if _matches_null_marker(raw_cost, declaration.pricing.null_cost_markers):
+        issues.append(
+            ContractExecutionIssue(
+                issue_code="CONTRACT_NULL_COST_REQUIRES_REVIEW",
+                severity="WARNING",
+                field_key=declaration.pricing.cost_source_field,
+                message="The supplier marked the cost as unavailable; no numeric cost was proposed.",
+            )
+        )
+    elif _decimal_or_none(raw_cost) is not None and declaration.pricing.price_basis is None:
+        issues.append(
+            ContractExecutionIssue(
+                issue_code="CONTRACT_PRICE_BASIS_UNRESOLVED",
+                severity="BLOCKING",
+                field_key=declaration.pricing.cost_source_field,
+                message="A supplier price was observed, but its price basis is unresolved.",
+            )
+        )
+    elif _text(raw_cost) is not None and (
+        _decimal_value(raw_cost) is None or _decimal_value(raw_cost) < 0
+    ):
+        issues.append(
+            ContractExecutionIssue(
+                issue_code="CONTRACT_COST_UNPARSEABLE",
+                severity="BLOCKING",
+                field_key=declaration.pricing.cost_source_field,
+                message=f"Supplier cost '{raw_cost}' could not be normalized as a monetary amount.",
+            )
+        )
+
+    raw_date = _text(fields.get("effective_date"))
+    if raw_date and _date_or_none(raw_date) is None:
+        issues.append(
+            ContractExecutionIssue(
+                issue_code="CONTRACT_EFFECTIVE_DATE_UNPARSEABLE",
+                severity="WARNING",
+                field_key="effective_date",
+                message=f"Effective date '{raw_date}' could not be normalized without guessing.",
+            )
+        )
+
+    raw_mbb = _text(fields.get("bulk_buy_tiers"))
+    if raw_mbb:
+        guidance = declaration.mbb.requires_validation_issue_when
+        issues.append(
+            ContractExecutionIssue(
+                issue_code="CONTRACT_MBB_REQUIRES_REVIEW",
+                severity="WARNING",
+                field_key="mbb_text",
+                message=(
+                    "Promotion or MBB text was preserved but not normalized because its scope, "
+                    "condition, or benefit is not fully proven."
+                    + (f" Review condition: {' '.join(guidance)}" if guidance else "")
+                ),
+            )
+        )
+    return tuple(issues)
+
+
 def _validation_rule_issues(
     fields: dict[str, Any],
     runtime_contract,
@@ -363,9 +440,9 @@ def _validation_rule_issues(
     issues: list[ContractExecutionIssue] = []
     for rule in runtime_contract.declaration.validation_rules:
         failed = False
-        cost = _decimal_or_none(fields.get("cost_price"))
-        rrp = _decimal_or_none(fields.get("rrp"))
-        increment = _decimal_or_none(fields.get("order_increment_qty"))
+        cost = _decimal_value(fields.get("cost_price"))
+        rrp = _decimal_value(fields.get("rrp"))
+        increment = _decimal_value(fields.get("order_increment_qty"))
         if rule.source_expression == "cost_price < rrp":
             failed = cost is not None and rrp is not None and cost >= rrp
         elif rule.source_expression == "cost_price > 0":
@@ -498,23 +575,53 @@ def _matches_null_marker(value: Any, markers: list[str]) -> bool:
 
 
 def _packaging_proposal(fields: dict[str, Any], runtime_contract, evidence: dict[str, Any]) -> dict[str, Any] | None:
-    source_text = _text(fields.get("pack_size") or fields.get("uom"))
     semantics = runtime_contract.declaration.packaging
-    if not source_text and semantics.price_basis is None:
+    source_text = _source_field_value(fields, semantics.packaging_source_field) or _text(
+        fields.get("pack_size") or fields.get("uom")
+    )
+    if not source_text and not any(
+        (
+            semantics.purchase_uom,
+            semantics.price_basis,
+            semantics.sellable_unit_uom,
+            semantics.break_pack_allowed is not None,
+        )
+    ):
         return None
     proposal: dict[str, Any] = {"source_text": source_text, "evidence": evidence}
-    if semantics.price_basis is not None:
-        proposal["price_basis"] = semantics.price_basis.model_dump(mode="json")
-    content = _content_measure(source_text)
+    for attribute in ("purchase_uom", "price_basis", "sellable_unit_uom"):
+        uom = getattr(semantics, attribute)
+        if uom is not None:
+            proposal[attribute] = uom.model_dump(mode="json")
+    if semantics.break_pack_allowed is not None:
+        proposal["break_pack_allowed"] = semantics.break_pack_allowed
+    content_source = _source_field_value(fields, semantics.content_measure_source_field)
+    content = _content_measure(content_source) if semantics.content_measure_source_field else None
     if content:
         amount, uom = content
         proposal["content_amount"] = str(amount)
-        proposal["content_uom"] = {"code": uom}
-    order_increment = _decimal_or_none(fields.get("order_increment_qty"))
-    if order_increment is not None and semantics.price_basis is not None and semantics.price_basis.code is not None:
+        proposal["content_uom"] = (
+            semantics.content_measure_uom.model_dump(mode="json")
+            if semantics.content_measure_uom is not None
+            else {"code": uom}
+        )
+    sellable_count = _leading_decimal(
+        _source_field_value(fields, semantics.sellable_units_per_purchase_unit_source_field)
+    )
+    if sellable_count is not None:
+        proposal["sellable_units_per_purchase_unit"] = str(sellable_count)
+    quantity_uom = semantics.sellable_unit_uom or semantics.price_basis
+    order_increment = _leading_decimal(_source_field_value(fields, semantics.order_increment_source_field))
+    if order_increment is not None and quantity_uom is not None and quantity_uom.code is not None:
         proposal["order_increment"] = {
             "amount": str(order_increment),
-            "uom": semantics.price_basis.model_dump(mode="json"),
+            "uom": quantity_uom.model_dump(mode="json"),
+        }
+    minimum_order = _leading_decimal(_source_field_value(fields, semantics.minimum_order_source_field))
+    if minimum_order is not None and quantity_uom is not None and quantity_uom.code is not None:
+        proposal["minimum_order_quantity"] = {
+            "amount": str(minimum_order),
+            "uom": quantity_uom.model_dump(mode="json"),
         }
     return proposal
 
@@ -522,7 +629,7 @@ def _packaging_proposal(fields: dict[str, Any], runtime_contract, evidence: dict
 def _content_measure(text: str | None) -> tuple[Decimal, str] | None:
     if not text:
         return None
-    match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(ml|mL|ML|g|G|kg|KG|l|L)\b", text)
+    match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(ml|g|kg|l|oz|lb|lbs)\b", text, re.IGNORECASE)
     if not match:
         return None
     amount = Decimal(match.group(1))
@@ -532,8 +639,39 @@ def _content_measure(text: str | None) -> tuple[Decimal, str] | None:
         "G": UnitCode.G.value,
         "KG": UnitCode.KG.value,
         "L": UnitCode.L.value,
+        "OZ": UnitCode.OZ.value,
+        "LB": UnitCode.LB.value,
+        "LBS": UnitCode.LB.value,
     }[raw_uom]
     return amount, uom
+
+
+def _source_field_value(fields: dict[str, Any], field_key: str | None) -> str | None:
+    if not field_key:
+        return None
+    return _text(fields.get(f"source:{field_key}"))
+
+
+def _leading_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    match = re.search(r"(?<!\d)(\d+(?:\.\d+)?)", str(value))
+    if not match:
+        return None
+    parsed = Decimal(match.group(1))
+    return parsed if parsed > 0 else None
+
+
+def _date_or_none(value: Any) -> date | None:
+    text = _text(value)
+    if text is None:
+        return None
+    for pattern in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            return datetime.strptime(text, pattern).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _confidence_text(field_value: Any, observation_confidence: Decimal | None) -> str | None:
@@ -550,6 +688,11 @@ def _confidence_text(field_value: Any, observation_confidence: Decimal | None) -
 
 
 def _decimal_or_none(value: Any) -> Decimal | None:
+    decimal = _decimal_value(value)
+    return decimal if decimal is not None and decimal >= 0 else None
+
+
+def _decimal_value(value: Any) -> Decimal | None:
     if value is None or value == "":
         return None
     if isinstance(value, str) and value.strip().lower() in {"by quote", "quote", "n/a", "na"}:
@@ -558,7 +701,7 @@ def _decimal_or_none(value: Any) -> Decimal | None:
         decimal = Decimal(str(value).replace(",", "").replace("$", "").replace("HKD", "").replace("HK$", "").strip())
     except (InvalidOperation, ValueError):
         return None
-    return decimal if decimal >= 0 else None
+    return decimal
 
 
 def _raw_money_text(value: Any) -> str | None:

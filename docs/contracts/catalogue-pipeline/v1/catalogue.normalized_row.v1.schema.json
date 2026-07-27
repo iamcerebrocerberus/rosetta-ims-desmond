@@ -324,6 +324,35 @@
       "title": "CostProposal",
       "type": "object"
     },
+    "DateProposal": {
+      "additionalProperties": false,
+      "description": "Proposed calendar date plus optional field-level evidence.",
+      "properties": {
+        "evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldEvidence"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Evidence supporting this date proposal."
+        },
+        "value": {
+          "description": "Proposed supplier effective date.",
+          "format": "date",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "value"
+      ],
+      "title": "DateProposal",
+      "type": "object"
+    },
     "DiscountedUnitPriceBenefit": {
       "additionalProperties": false,
       "description": "MBB benefit that changes the unit price to a quoted discounted amount.",
@@ -781,14 +810,14 @@
         "effective_date": {
           "anyOf": [
             {
-              "$ref": "#/$defs/TextProposal"
+              "$ref": "#/$defs/DateProposal"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "description": "Proposed effective-date text pending date normalization."
+          "description": "Proposed supplier effective date."
         },
         "mbb_terms": {
           "description": "Proposed MBB terms or tiers.",
@@ -1236,6 +1265,8 @@
         "STRIP",
         "KG",
         "G",
+        "OZ",
+        "LB",
         "L",
         "ML",
         "OTHER",

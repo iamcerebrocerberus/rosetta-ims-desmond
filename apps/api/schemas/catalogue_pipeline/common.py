@@ -165,6 +165,13 @@ class TextProposal(ContractModel):
     evidence: FieldEvidence | None = Field(None, description="Evidence supporting this proposal.")
 
 
+class DateProposal(ContractModel):
+    """Proposed calendar date plus optional field-level evidence."""
+
+    value: date = Field(..., description="Proposed supplier effective date.")
+    evidence: FieldEvidence | None = Field(None, description="Evidence supporting this date proposal.")
+
+
 class CostProposal(Cost):
     """Proposed cost with optional provenance."""
 
