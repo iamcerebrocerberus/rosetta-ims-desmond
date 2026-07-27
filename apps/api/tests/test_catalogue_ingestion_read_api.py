@@ -295,6 +295,34 @@ def test_serving_layer_exposes_only_explicit_immutable_publications(client, db, 
     assert body["current_publications"][0]["canonical_sku"] == "10447"
     assert body["publication_history"][0]["is_current"] is True
     assert body["publication_history"][0]["snapshot"] == body["current_publications"][0]
+
+    consumer_page = client.get("/products/serving-publications").json()
+    assert consumer_page["total"] == 1
+    assert consumer_page["items"][0] == body["current_publications"][0]
+    assert client.get("/products/serving-publications?search=10447").json()["total"] == 1
+    assert client.get("/products/serving-publications?supplier_id=999").json()["total"] == 0
+
+    second_publication = client.post(
+        f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/publish",
+        headers={"Idempotency-Key": "read-api-publish-v2"},
+        json={"publication_version": "read-api-v2"},
+    )
+    assert second_publication.status_code == 200
+    detail = client.get("/products/serving-publications/10447").json()
+    assert detail["canonical_sku"] == "10447"
+    assert len(detail["current_publications"]) == 1
+    assert detail["current_publications"][0]["lineage"]["publication_version"] == "read-api-v2"
+    assert len(detail["publication_history"]) == 2
+    assert sum(item["is_current"] for item in detail["publication_history"]) == 1
+    assert {
+        item["snapshot"]["lineage"]["publication_version"]
+        for item in detail["publication_history"]
+    } == {"read-api-v1", "read-api-v2"}
+    current_after_supersession = client.get("/products/serving-publications").json()
+    assert current_after_supersession["total"] == 1
+    assert current_after_supersession["items"][0]["lineage"]["publication_version"] == "read-api-v2"
+    assert client.get("/products/serving-publications/DOES-NOT-EXIST").status_code == 404
+
     actions = {
         action
         for (action,) in db.query(models.AuditLog.action)
@@ -371,6 +399,8 @@ def test_read_endpoints_require_authorization(client, db, monkeypatch):
     try:
         for layer in ("raw", "staging", "intermediate", "serving"):
             assert client.get(f"/catalogues/ingestions/{run}/{layer}").status_code in {401, 403}
+        assert client.get("/products/serving-publications").status_code in {401, 403}
+        assert client.get("/products/serving-publications/10447").status_code in {401, 403}
         assert client.post(
             f"/catalogues/ingestions/{run}/mastering-candidates/{candidate_id}/review",
             json={"review_status": "REJECTED"},

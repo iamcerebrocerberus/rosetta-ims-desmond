@@ -165,8 +165,8 @@ same review/application/publication services used by the run-scoped HITL API.
 - HITL UI integration for the implemented run-scoped command API.
 - Automatic Product Variant creation or matching beyond the current approved
   service boundary. The acceptance fixture uses an existing canonical SKU.
-- Consumer cutover from legacy inventory reads to the run-scoped Serving
-  retrieval endpoint.
+- UI composition of the product-centric Serving retrieval endpoints with
+  legacy operational stock/channel reads.
 - Wider supplier examples beyond the currently supported evidence-backed
   Hill's and Alfamedic runtime contracts.
 

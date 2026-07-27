@@ -210,4 +210,5 @@ Deferred work:
 - HITL endpoints;
 - review-decision orchestration after human review;
 - applying approved supplier commercial state;
-- serving-read cutover from legacy inventory reads to publication snapshots.
+- UI integration of product-centric publication-snapshot reads with legacy
+  operational inventory data.

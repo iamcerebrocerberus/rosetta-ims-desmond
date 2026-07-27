@@ -209,6 +209,6 @@ serving reads in this task.
 
 - HITL UI integration for the run-scoped validation, review, apply, and publish APIs.
 - Runtime adapter expansion for future supported supplier extraction outputs.
-- Public read cutover from legacy inventory views to `ServingItemV1`
-  publications.
+- UI composition of product-centric `ServingItemV1` reads with operational
+  stock/channel data; legacy inventory writes remain unchanged.
 - Additional supplier-specific validation rules as evidence is confirmed.

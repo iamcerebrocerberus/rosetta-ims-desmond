@@ -15,8 +15,29 @@ from services.pricing_service import product_to_dict
 from services import tag_service, audit, audit_log
 from dependencies import get_current_user, require_user
 from permissions import require_capability, has_capability, SENSITIVE_PRODUCT_FIELDS
+from schemas.catalogue_pipeline import ServingItemV1
+from services.catalogue_serving_reads import CatalogueServingReadService
 
 router = APIRouter(prefix="/products", tags=["products"])
+
+
+class ServingPublicationPageResponse(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[ServingItemV1]
+
+
+class ServingPublicationHistoryItemResponse(BaseModel):
+    is_current: bool
+    superseded_at: str | None = None
+    snapshot: ServingItemV1
+
+
+class ServingPublicationHistoryResponse(BaseModel):
+    canonical_sku: str
+    current_publications: list[ServingItemV1]
+    publication_history: list[ServingPublicationHistoryItemResponse]
 
 
 def _verified_skus(db: Session) -> set:
@@ -568,6 +589,61 @@ def field_options(db: Session = Depends(database.get_db), _user: models.User = D
         "uoms":          distinct(models.Product.uom),
         "pack_units":    distinct(models.Product.pack_unit),
     }
+
+
+@router.get("/serving-publications", response_model=ServingPublicationPageResponse)
+def list_serving_publications(
+    search: str | None = Query(None),
+    supplier_id: int | None = Query(None, gt=0),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=5000),
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_user),
+):
+    """Current approved catalogue snapshots for inventory consumers.
+
+    This projection intentionally excludes superseded publications and never
+    rebuilds values from mutable supplier-commercial tables.
+    """
+    page = CatalogueServingReadService(db).list_current(
+        search=search,
+        supplier_id=supplier_id,
+        offset=offset,
+        limit=limit,
+    )
+    return ServingPublicationPageResponse(
+        total=page.total,
+        offset=page.offset,
+        limit=page.limit,
+        items=list(page.items),
+    )
+
+
+@router.get(
+    "/serving-publications/{canonical_sku:path}",
+    response_model=ServingPublicationHistoryResponse,
+)
+def get_serving_publication_history(
+    canonical_sku: str,
+    db: Session = Depends(database.get_db),
+    _user: models.User = Depends(require_user),
+):
+    """Current approved supplier offers and immutable history for one SKU."""
+    history = CatalogueServingReadService(db).history_for_sku(canonical_sku)
+    if not history:
+        raise HTTPException(status_code=404, detail="No serving publication found for SKU")
+    return ServingPublicationHistoryResponse(
+        canonical_sku=canonical_sku,
+        current_publications=[item.snapshot for item in history if item.is_current],
+        publication_history=[
+            {
+                "is_current": item.is_current,
+                "superseded_at": item.superseded_at,
+                "snapshot": item.snapshot.model_dump(mode="json"),
+            }
+            for item in history
+        ],
+    )
 
 
 @router.get("/{sku:path}/suppliers")   # registered before the catch-all GET below
