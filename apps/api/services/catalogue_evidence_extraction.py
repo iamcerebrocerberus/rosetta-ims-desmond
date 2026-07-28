@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from enum import Enum
@@ -38,17 +39,21 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-pro-preview")
 # ceiling truncates the JSON envelope (finish_reason MAX_TOKENS). Give ample
 # room; env-overridable for very dense pages.
 MAX_VISION_TOKENS = int(os.environ.get("CATALOGUE_VISION_MAX_TOKENS", "65536"))
-# Gemini 3.x "thinking" models spend most of the token budget AND wall-clock on
-# thinking before emitting. LOW keeps OCR quality while cutting latency/cost
-# sharply. Empty disables the override (for models that don't accept it — the
-# call then falls back automatically on an invalid-argument error).
-VISION_THINKING_LEVEL = os.environ.get("CATALOGUE_VISION_THINKING_LEVEL", "LOW").strip()
+# Gemini 3.x "thinking" models silently UNDER-EXTRACT dense catalogue tables at
+# low thinking levels: measured on a real Hill's page, LOW returned 0-1 rows and
+# MEDIUM 3 rows where HIGH returned the full 36-row table (finish STOP each
+# time — no error, just missing products). Completeness beats latency/cost for
+# price-list ingestion, so HIGH is the default; env-overridable. Empty disables
+# the override (models that reject it fall back automatically on 400).
+VISION_THINKING_LEVEL = os.environ.get("CATALOGUE_VISION_THINKING_LEVEL", "HIGH").strip()
 # A multi-page PDF is N sequential provider round-trips otherwise; run the
 # per-page vision calls concurrently, bounded here (env-overridable).
 _VISION_CONCURRENCY = max(1, int(os.environ.get("CATALOGUE_VISION_CONCURRENCY", "6")))
 # Retry a failed page inside the same extraction attempt so successful pages
 # are not re-sent merely because one provider call was throttled.
 _VISION_UNIT_RETRIES = max(0, int(os.environ.get("CATALOGUE_VISION_UNIT_RETRIES", "2")))
+# Linear per-attempt backoff before a unit retry (seconds x attempt number).
+_VISION_RETRY_BACKOFF_SECONDS = max(0.0, float(os.environ.get("CATALOGUE_VISION_RETRY_BACKOFF_SECONDS", "20")))
 
 
 class ExtractionStatus(str, Enum):
@@ -726,6 +731,10 @@ def _extract_pdf(content: bytes) -> ExtractionResult:
                 )
             except _VisionExtractionFailure as exc:
                 if exc.retryable and attempt_count <= _VISION_UNIT_RETRIES:
+                    # Back off before re-calling: retryable failures are mostly
+                    # per-minute throttles (429) — immediate retries land inside
+                    # the same window and burn every attempt in seconds.
+                    time.sleep(_VISION_RETRY_BACKOFF_SECONDS * attempt_count)
                     continue
                 return page_number, [], None, ExtractionError(
                     code=exc.code,
