@@ -257,3 +257,49 @@ def test_unresolved_price_basis_never_produces_a_cost_proposal():
     assert row.normalized_fields["packaging"]["content_amount"] == "35"
     assert row.normalized_fields["packaging"]["content_uom"]["code"] == "ML"
     assert "CONTRACT_PRICE_BASIS_UNRESOLVED" in {issue.issue_code for issue in row.issues}
+
+
+def test_hills_contract_conforms_both_science_diet_and_prescription_diet_editions():
+    """One Hill's contract, two live document families.
+
+    Labels exactly as Gemini vision returned them on the real files: the
+    classic edition prints Life Stage; the 2026 Prescription Diet edition
+    replaces it with Disease Category. Both must satisfy required headers and
+    compose a product name from whichever dimension columns are present.
+    """
+    hills = runtime.load_contract(14)
+
+    classic = {
+        "Product Code 產品編號": "10447",
+        "Product Range 產品系列": "健康燉肉 Healthy Cuisine",
+        "Life Stage 生命階段": "幼貓 Kitten",
+        "Product Description 產品名稱": "健康燉肉配方 Healthy Cuisine",
+        "Size 重量": "82g",
+        "Gross Wholesale Price 折扣前批發價（每包／罐）": "13.10",
+        "Order Multiple 訂貨單位": "12",
+    }
+    prescription = {
+        "Product Code 產品編號": "607665",
+        "Disease Category 疾病種類": "Cancer",
+        "Product Range 產品系列": "ONC",
+        "Product Description 產品名稱": "ONC Care Chicken Stew - Cancer Care",
+        "Size 重量": "2.9 oz",
+        "Gross Wholesale Price 折扣前批發價（每包／罐）": "25.20",
+        "Order Multiple 訂貨單位": "24",
+    }
+
+    for label, row, expected_name in (
+        ("classic", classic, "Healthy Cuisine Kitten Healthy Cuisine"),
+        ("prescription", prescription, "ONC Cancer ONC Care Chicken Stew - Cancer Care"),
+    ):
+        outcome = conform_observations((_observation(row),), (uuid4(),), hills)
+        item = outcome.items[0]
+        header_issues = [
+            issue.issue_code
+            for issue in item.issues
+            if issue.issue_code in ("CONTRACT_REQUIRED_HEADER_MISSING", "CONTRACT_REQUIRED_FIELD_MISSING")
+        ]
+        assert header_issues == [], f"{label}: {header_issues}"
+        assert item.normalized_fields["product_name"]["value"] == expected_name, label
+        assert item.normalized_fields["supplier_sku"]["value"] == row["Product Code 產品編號"], label
+        assert item.normalized_fields["cost"]["currency"] == "HKD", label

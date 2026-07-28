@@ -8,7 +8,7 @@
     "supplier_code": null
   },
   "document_type": "PRICE_LIST",
-  "format_name": "Hill's Science Diet PDF price list",
+  "format_name": "Hill's PDF price list (Science Diet and Prescription Diet editions)",
   "source_format": "PDF_TABLE",
   "support_status": "SUPPORTED",
   "effective_from": null,
@@ -18,6 +18,11 @@
       "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
       "reference": "external-sample:Hill's.pdf",
       "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+    },
+    {
+      "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+      "reference": "external-sample:Hill's 2026 new price.pdf",
+      "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
     },
     {
       "evidence_type": "PARSER_BEHAVIOR",
@@ -53,17 +58,18 @@
       }
     ],
     "required_headers": [
-      "Product Code / \u7522\u54c1\u7de8\u865f",
-      "Product Range / \u7522\u54c1\u7cfb\u5217",
-      "Life Stage / \u751f\u547d\u968e\u6bb5",
-      "Product Description / \u7522\u54c1\u540d\u7a31",
-      "Size / \u91cd\u91cf",
-      "Gross Wholesale Price / \u6bcf\u7bb1\u00b7\u7f50",
-      "Order Multiple / \u8a02\u8ca8\u55ae\u4f4d"
+      "Product Code / 產品編號",
+      "Product Range / 產品系列",
+      "Product Description / 產品名稱",
+      "Size / 重量",
+      "Gross Wholesale Price / 每箱·罐",
+      "Order Multiple / 訂貨單位"
     ],
     "optional_headers": [
-      "Recommended Retail Selling Price / \u5efa\u8b70\u96f6\u552e\u50f9",
-      "Regular Retail Price / \u6b63\u50f9"
+      "Life Stage / 生命階段",
+      "Disease Category / 疾病種類",
+      "Recommended Retail Selling Price / 建議零售價",
+      "Regular Retail Price / 正價"
     ],
     "row_eligibility_rules": [
       "One product variant per price-table row."
@@ -80,7 +86,7 @@
       "field_key": "supplier_sku",
       "role": "SUPPLIER_SKU",
       "requirement": "REQUIRED",
-      "source_column": "Product Code / \u7522\u54c1\u7de8\u865f",
+      "source_column": "Product Code / 產品編號",
       "source_path": null,
       "composed_from": [],
       "constant_value": null,
@@ -91,6 +97,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -116,18 +127,24 @@
       "source_column": null,
       "source_path": null,
       "composed_from": [
-        "Product Range / \u7522\u54c1\u7cfb\u5217",
-        "Life Stage / \u751f\u547d\u968e\u6bb5",
-        "Product Description / \u7522\u54c1\u540d\u7a31"
+        "Product Range / 產品系列",
+        "Disease Category / 疾病種類",
+        "Life Stage / 生命階段",
+        "Product Description / 產品名稱"
       ],
       "constant_value": null,
       "aliases": [],
-      "description": "Joined product range, life stage, and product description.",
+      "description": "Joined product range, disease category (Prescription Diet editions), life stage (Science Diet editions), and product description; absent columns drop out of the join.",
       "evidence": [
         {
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -150,7 +167,7 @@
       "field_key": "pack_size",
       "role": "PACKAGING",
       "requirement": "REQUIRED",
-      "source_column": "Size / \u91cd\u91cf",
+      "source_column": "Size / 重量",
       "source_path": null,
       "composed_from": [],
       "constant_value": null,
@@ -161,6 +178,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -183,7 +205,7 @@
       "field_key": "cost",
       "role": "SOURCE_PRICE",
       "requirement": "REQUIRED",
-      "source_column": "Gross Wholesale Price / \u6bcf\u7bb1\u00b7\u7f50",
+      "source_column": "Gross Wholesale Price / 每箱·罐",
       "source_path": null,
       "composed_from": [],
       "constant_value": null,
@@ -194,6 +216,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -216,7 +243,7 @@
       "field_key": "rrp",
       "role": "RRP",
       "requirement": "OPTIONAL",
-      "source_column": "Recommended Retail Selling Price / \u5efa\u8b70\u96f6\u552e\u50f9",
+      "source_column": "Recommended Retail Selling Price / 建議零售價",
       "source_path": null,
       "composed_from": [],
       "constant_value": null,
@@ -227,6 +254,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -249,7 +281,7 @@
       "field_key": "order_multiple",
       "role": "ORDER_INCREMENT",
       "requirement": "REQUIRED",
-      "source_column": "Order Multiple / \u8a02\u8ca8\u55ae\u4f4d",
+      "source_column": "Order Multiple / 訂貨單位",
       "source_path": null,
       "composed_from": [],
       "constant_value": null,
@@ -260,6 +292,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -295,6 +332,11 @@
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
         },
         {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
+        },
+        {
           "evidence_type": "PARSER_BEHAVIOR",
           "reference": "apps/api/services/supplier_source_contract_runtime.py",
           "note": "Runtime adapter applies supported Pydantic source-contract semantics for per-unit cost, order multiple, constant brand/category, and weight parsing."
@@ -326,6 +368,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -361,6 +408,11 @@
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
         },
         {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
+        },
+        {
           "evidence_type": "PARSER_BEHAVIOR",
           "reference": "apps/api/services/supplier_source_contract_runtime.py",
           "note": "Runtime adapter applies supported Pydantic source-contract semantics for per-unit cost, order multiple, constant brand/category, and weight parsing."
@@ -392,6 +444,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -439,9 +496,9 @@
     "minimum_order_source_field": null,
     "break_pack_allowed": null,
     "interpretation_rules": [
-      "Treat Size / \u91cd\u91cf as content measure for one sellable unit when a weight/volume unit is printed.",
+      "Treat Size / 重量 as content measure for one sellable unit when a weight/volume unit is printed.",
       "Ignore a leading case prefix such as 24/ when deriving sellable-unit content measure.",
-      "Order Multiple / \u8a02\u8ca8\u55ae\u4f4d is ordering semantics, not cost divisor evidence."
+      "Order Multiple / 訂貨單位 is ordering semantics, not cost divisor evidence."
     ],
     "unresolved_semantics": [
       "Purchase UOM varies by row and is not fixed by the format declaration.",
@@ -469,6 +526,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",
@@ -499,6 +561,11 @@
           "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
           "reference": "external-sample:Hill's.pdf",
           "note": "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns."
+        },
+        {
+          "evidence_type": "REAL_SOURCE_CATALOGUE_SAMPLE",
+          "reference": "external-sample:Hill's 2026 new price.pdf",
+          "note": "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column."
         },
         {
           "evidence_type": "PARSER_BEHAVIOR",

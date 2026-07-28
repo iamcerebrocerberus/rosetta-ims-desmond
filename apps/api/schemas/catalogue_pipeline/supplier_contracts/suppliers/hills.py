@@ -34,6 +34,11 @@ _EVIDENCE = [
         "I supplied a 9-page PDF sample confirming bilingual headers, Effective dates, Gross Wholesale Price, Product Code, Size, and Order Multiple columns.",
     ),
     evidence(
+        SupplierSourceEvidenceType.REAL_SOURCE_CATALOGUE_SAMPLE,
+        "external-sample:Hill's 2026 new price.pdf",
+        "I supplied a 6-page 2026 Prescription Diet (Feline) edition; a live extraction run confirmed it replaces the Life Stage column with Disease Category while keeping every other declared column.",
+    ),
+    evidence(
         SupplierSourceEvidenceType.PARSER_BEHAVIOR,
         "apps/api/services/supplier_source_contract_runtime.py",
         "Runtime adapter applies supported Pydantic source-contract semantics for per-unit cost, order multiple, constant brand/category, and weight parsing.",
@@ -58,7 +63,7 @@ HILLS_PRICE_LIST_V1 = register_supplier_source_contract(
         contract_version="v1",
         supplier=SupplierSourceReference(supplier_id=14, supplier_name="Hill's", supplier_code=None),
         document_type=SupplierDocumentType.PRICE_LIST,
-        format_name="Hill's Science Diet PDF price list",
+        format_name="Hill's PDF price list (Science Diet and Prescription Diet editions)",
         source_format=SourceFormat.PDF_TABLE,
         support_status=SupplierContractSupportStatus.SUPPORTED,
         evidence=_EVIDENCE,
@@ -75,13 +80,16 @@ HILLS_PRICE_LIST_V1 = register_supplier_source_contract(
             required_headers=[
                 "Product Code / 產品編號",
                 "Product Range / 產品系列",
-                "Life Stage / 生命階段",
                 "Product Description / 產品名稱",
                 "Size / 重量",
                 "Gross Wholesale Price / 每箱·罐",
                 "Order Multiple / 訂貨單位",
             ],
             optional_headers=[
+                # Edition-specific dimension: Science Diet editions print Life
+                # Stage; Prescription Diet editions print Disease Category.
+                "Life Stage / 生命階段",
+                "Disease Category / 疾病種類",
                 "Recommended Retail Selling Price / 建議零售價",
                 "Regular Retail Price / 正價",
             ],
@@ -103,10 +111,11 @@ HILLS_PRICE_LIST_V1 = register_supplier_source_contract(
                 requirement=SourceFieldRequirement.REQUIRED,
                 composed_from=[
                     "Product Range / 產品系列",
+                    "Disease Category / 疾病種類",
                     "Life Stage / 生命階段",
                     "Product Description / 產品名稱",
                 ],
-                description="Joined product range, life stage, and product description.",
+                description="Joined product range, disease category (Prescription Diet editions), life stage (Science Diet editions), and product description; absent columns drop out of the join.",
                 evidence=_EVIDENCE,
             ),
             SourceFieldContract(
